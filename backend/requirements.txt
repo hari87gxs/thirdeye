@@ -1,0 +1,25 @@
+# Third Eye Backend - Requirements
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+python-multipart==0.0.18
+python-dotenv==1.1.0
+
+# Database
+sqlalchemy==2.0.36
+aiosqlite==0.21.0
+
+# PDF Processing
+pdfplumber==0.11.4
+PyMuPDF==1.24.1
+pdf2image==1.17.0
+Pillow==11.3.0
+
+# Computer Vision (for tampering checks)
+opencv-python-headless
+numpy
+
+# AI / LLM (Azure OpenAI — uses the same SDK)
+openai>=1.3.0
+
+# Utilities
+python-dateutil==2.9.0

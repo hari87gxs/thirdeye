@@ -1,0 +1,97 @@
+import {
+  DocumentResponse,
+  UploadResponse,
+  DocumentAnalysis,
+  AgentResult,
+  TransactionsResponse,
+  StatementMetrics,
+} from "./types";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+
+async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+    },
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(error.detail || `API error: ${res.status}`);
+  }
+  return res.json();
+}
+
+// ─── Documents ───────────────────────────────────────────────────────────────
+
+export async function uploadDocuments(files: File[]): Promise<UploadResponse> {
+  const formData = new FormData();
+  files.forEach((file) => formData.append("files", file));
+
+  const res = await fetch(`${API_BASE}/upload`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(error.detail || `Upload failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function listDocuments(): Promise<DocumentResponse[]> {
+  return fetchJSON<DocumentResponse[]>(`${API_BASE}/documents`);
+}
+
+export async function getDocument(id: string): Promise<DocumentResponse> {
+  return fetchJSON<DocumentResponse>(`${API_BASE}/documents/${id}`);
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  await fetchJSON<{ message: string }>(`${API_BASE}/documents/${id}`, {
+    method: "DELETE",
+  });
+}
+
+// ─── Analysis ────────────────────────────────────────────────────────────────
+
+export async function analyzeDocument(documentId: string): Promise<{ message: string; document_id: string }> {
+  return fetchJSON(`${API_BASE}/analyze/${documentId}`, { method: "POST" });
+}
+
+export async function getResults(documentId: string): Promise<DocumentAnalysis> {
+  return fetchJSON<DocumentAnalysis>(`${API_BASE}/results/${documentId}`);
+}
+
+export async function getAgentResult(documentId: string, agentType: string): Promise<AgentResult> {
+  return fetchJSON<AgentResult>(`${API_BASE}/results/${documentId}/${agentType}`);
+}
+
+// ─── Transactions & Metrics ──────────────────────────────────────────────────
+
+export async function getTransactions(
+  documentId: string,
+  params?: { limit?: number; offset?: number; transaction_type?: string; category?: string }
+): Promise<TransactionsResponse> {
+  const searchParams = new URLSearchParams();
+  if (params?.limit) searchParams.set("limit", String(params.limit));
+  if (params?.offset) searchParams.set("offset", String(params.offset));
+  if (params?.transaction_type) searchParams.set("transaction_type", params.transaction_type);
+  if (params?.category) searchParams.set("category", params.category);
+
+  const qs = searchParams.toString();
+  return fetchJSON<TransactionsResponse>(`${API_BASE}/transactions/${documentId}${qs ? `?${qs}` : ""}`);
+}
+
+export async function getMetrics(documentId: string): Promise<StatementMetrics> {
+  return fetchJSON<StatementMetrics>(`${API_BASE}/metrics/${documentId}`);
+}
+
+// ─── Health ──────────────────────────────────────────────────────────────────
+
+export async function healthCheck(): Promise<{ status: string; service: string; version: string }> {
+  const BASE = process.env.NEXT_PUBLIC_API_URL?.replace("/api", "") || "http://localhost:8000";
+  return fetchJSON(`${BASE}/health`);
+}
