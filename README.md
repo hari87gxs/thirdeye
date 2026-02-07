@@ -13,6 +13,7 @@
   <img src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi" />
   <img src="https://img.shields.io/badge/Next.js-13.5-black?logo=next.js" />
   <img src="https://img.shields.io/badge/GPT--4o-Azure%20OpenAI-orange?logo=openai" />
+  <img src="https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker" />
 </p>
 
 ---
@@ -156,6 +157,58 @@ node node_modules/next/dist/bin/next dev --port 3000
 
 ---
 
+## Run with Docker (Recommended)
+
+The easiest way to run ThirdEye — no Python/Node.js installation needed.
+
+### Prerequisites
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
+- Azure OpenAI API key and endpoint
+
+### Steps
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/hari87gxs/thirdeye.git
+cd thirdeye
+
+# 2. Create your .env file
+cp .env.example .env
+# Edit .env and fill in your Azure OpenAI credentials:
+#   AZURE_OPENAI_API_KEY=your-key
+#   AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+
+# 3. Build and start both services
+docker compose up --build -d
+
+# 4. Open the app
+open http://localhost:3000
+```
+
+That's it! Backend runs on port 8000, frontend on port 3000.
+
+### Docker Commands Reference
+
+```bash
+# View logs
+docker compose logs -f              # all services
+docker compose logs -f backend      # backend only
+
+# Stop
+docker compose down
+
+# Rebuild after code changes
+docker compose up --build -d
+
+# Stop and wipe database + uploads
+docker compose down -v
+```
+
+> **Deploying to AWS?** See [DEPLOYMENT.md](./DEPLOYMENT.md) for full EC2 and ECS Fargate guides.
+
+---
+
 ## Project Structure
 
 ```
@@ -163,8 +216,12 @@ third-eye/
 ├── README.md                    ← You are here
 ├── ARCHITECTURE.md              ← System architecture deep-dive
 ├── USER_GUIDE.md                ← Feature guide & user manual
+├── DEPLOYMENT.md                ← AWS deployment guide (EC2 & ECS)
+├── docker-compose.yml           # One-command local Docker deployment
+├── .env.example                 # Environment variable template
 │
 ├── backend/
+│   ├── Dockerfile               # Backend container image
 │   ├── main.py                  # FastAPI app + CORS + startup
 │   ├── config.py                # Settings & environment variables
 │   ├── database.py              # SQLAlchemy engine & sessions
@@ -187,6 +244,7 @@ third-eye/
 │   └── uploads/                 # Stored PDF files
 │
 └── frontend/
+    ├── Dockerfile               # Frontend container image (multi-stage)
     ├── package.json
     ├── public/logo.png          # ThirdEye logo
     └── src/
@@ -221,6 +279,7 @@ third-eye/
 | `AZURE_OPENAI_CHAT_DEPLOYMENT` | | `gpt-4o` | Chat model deployment name |
 | `AZURE_OPENAI_VISION_DEPLOYMENT` | | `gpt-4o` | Vision model deployment name |
 | `DATABASE_URL` | | `sqlite:///./third_eye.db` | SQLAlchemy DB connection string |
+| `ALLOWED_ORIGINS` | | `http://localhost:3000` | Comma-separated CORS origins |
 | `NEXT_PUBLIC_API_URL` | | `http://localhost:8000/api` | Backend URL for frontend |
 
 ---
@@ -271,4 +330,5 @@ With the backend running, interactive API docs are available at:
 |----------|-------------|
 | 📐 [ARCHITECTURE.md](./ARCHITECTURE.md) | System design, data flow, agent internals, database schema |
 | 📖 [USER_GUIDE.md](./USER_GUIDE.md) | Feature walkthrough, agent capabilities, competitive advantages |
+| 🚀 [DEPLOYMENT.md](./DEPLOYMENT.md) | Docker setup + AWS deployment (EC2 & ECS Fargate) |
 | 📝 [PROJECT_STATUS.md](./PROJECT_STATUS.md) | Development session log & bug fix history |
