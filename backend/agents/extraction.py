@@ -77,7 +77,7 @@ BANK_PRODUCT_IDENTIFIERS = {
     "OCBC": ["360 ACCOUNT", "FRANK ACCOUNT", "OCBC VOYAGE"],
     "UOB": ["UNIPLUS", "ONE ACCOUNT", "STASH ACCOUNT"],
     "Standard Chartered": ["BONUSSAVER", "JUMPSTART"],
-    "HSBC": ["EVERYDAY GLOBAL ACCOUNT"],
+    "HSBC": ["EVERYDAY GLOBAL ACCOUNT", "CURRENT ACCOUNT"],
 }
 
 # Bank-specific noise to strip (headers/footers that repeat on every page)
@@ -90,6 +90,8 @@ BANK_NOISE_PATTERNS = {
             r"If date requested is a non business day.*"],
     "UOB": [r"Page \d+ of \d+", r"United Overseas Bank Limited.*"],
     "Standard Chartered": [r"Page \d+ of \d+"],
+    "HSBC": [r"Page\s*\d+\s*of\s*\d+", r"Deposit Insurance Scheme.*",
+             r"Issued by The Hongkong.*", r"ENDOFSTATEMENT"],
     "_default": [r"Page \d+\s*/\s*\d+", r"Page \d+ of \d+"],
 }
 
@@ -241,10 +243,15 @@ def _normalise_date_to_dd_mmm(date_str: str) -> str:
     """Normalise various date formats to 'DD MMM'.
     '01-Sep-2025' → '01 SEP', '30 NOV' → '30 NOV', '01/12/2025' → '01 DEC'.
     '1 31 Dec 2025' → '31 DEC' (Aspire: sequence number + date).
+    '30SEP2025' → '30 SEP' (HSBC: no separators).
     """
     if not date_str:
         return ""
     date_str = date_str.strip()
+    # DDMMMYYYY — no separators (HSBC: 30SEP2025)
+    m = re.search(r'(\d{2})([A-Za-z]{3})(\d{4})', date_str)
+    if m:
+        return f"{m.group(1)} {m.group(2).upper()}"
     # DD-MMM-YYYY (DBS)
     m = re.search(r'(\d{1,2})-([A-Za-z]{3})-\d{4}', date_str)
     if m:
@@ -727,7 +734,7 @@ def _is_transaction_page(page, header_y: int) -> bool:
     if "Balance Brought Forward" in text or "Balance Carried Forward" in text:
         return True
     if re.search(
-        r'\d{1,2}[\s\-/](JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)',
+        r'\d{1,2}[\s\-/]?(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)',
         text, re.IGNORECASE,
     ):
         return True
@@ -770,6 +777,15 @@ def _extract_account_info_from_text(pages) -> Dict:
                 )
                 if m:
                     info["statement_period"] = f"{m.group(1)} to {m.group(2)}"
+
+            # Statement date (HSBC: "StatementDate 31OCT2025")
+            if "statement_date" not in info:
+                m = re.search(
+                    r'Statement\s*Date\s*:?\s*(\d{1,2}[A-Za-z]{3}\d{4}|\d{1,2}[\s\-][A-Za-z]{3}[\s\-]\d{4})',
+                    s, re.IGNORECASE,
+                )
+                if m:
+                    info["statement_date"] = m.group(1)
 
             # Currency
             if "currency" not in info:
@@ -887,7 +903,7 @@ def _try_extract_words(file_path: str) -> Optional[Dict]:
     current_account_section: int = 0  # Increments at each new section boundary
 
     date_re = re.compile(
-        r'\d{1,2}[\s\-/]'
+        r'\d{1,2}[\s\-/]?'
         r'(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)',
         re.IGNORECASE,
     )
@@ -895,7 +911,23 @@ def _try_extract_words(file_path: str) -> Optional[Dict]:
     summary_re = re.compile(
         r'(Total Withdrawal|Total Deposit|Total Interest|Average Balance|'
         r'Withholding Tax|Total Debit|Total Credit|'
-        r'Grand Total|Closing Statement)',
+        r'Grand Total|Closing Statement|'
+        r'ENDOFSTATEMENT|END\s*OF\s*STATEMENT)',
+        re.IGNORECASE,
+    )
+    # Footer text that should be skipped (Deposit Insurance disclaimers, etc.)
+    footer_re = re.compile(
+        r'(Deposit\s*Insurance|Singaporedollardeposit|'
+        r'currency\s*deposits.*not\s*insured|'
+        r'structureddeposits|'
+        r'Issued\s*by\s*The\s*Hongkong|'
+        r'S\$100,000\s*in\s*aggregate|'
+        r'aggregate\s*per\s*depositor)',
+        re.IGNORECASE,
+    )
+    # HSBC-specific page summary pattern: "WITHDRAWALS  305,465.02DR  ASAT  31OCT2025"
+    hsbc_summary_re = re.compile(
+        r'^(WITHDRAWALS?|DEPOSITS?)\b',
         re.IGNORECASE,
     )
 
@@ -934,6 +966,8 @@ def _try_extract_words(file_path: str) -> Optional[Dict]:
 
         sorted_ys = sorted(y_groups.keys())
         current_txn: Optional[Dict] = None
+        past_closing: bool = False  # Set True after BALANCE CARRIED FORWARD
+        in_summary: bool = False    # Set True when we hit page summary (WITHDRAWALS/DEPOSITS)
 
         for y in sorted_ys:
             if y < page_data_y_min:
@@ -974,6 +1008,32 @@ def _try_extract_words(file_path: str) -> Optional[Dict]:
             # since some banks use descriptions like "Interest Earned" for real txns)
             if summary_re.search(desc_text) and not (date_text and date_re.search(date_text.strip())):
                 continue
+            if summary_re.search(row_full):
+                continue
+
+            # Skip footer/disclaimer text (Deposit Insurance Scheme, etc.)
+            if footer_re.search(row_full):
+                continue
+
+            # Skip HSBC-style page summary rows: "WITHDRAWALS 305,465.02DR ASAT ..."
+            # These appear when the date column holds "WITHDRAWALS" or "DEPOSITS"
+            # and can span 2 y-groups, so set a flag to skip the next row too.
+            if date_text and hsbc_summary_re.match(date_text.strip()):
+                in_summary = True
+                continue
+            if in_summary:
+                # Check if this row is the continuation of the summary
+                # (contains "ASAT" or "BALANCECARRIEDFORWARD") or has no date
+                row_full_upper = row_full.upper()
+                if "ASAT" in row_full_upper or "BALANCECARRIED" in row_full_upper:
+                    continue
+                elif "BALANCEBROUGHT" in row_full_upper:
+                    in_summary = False  # Reset — this is a new section
+                elif not (date_text and date_re.search(date_text.strip())):
+                    # Still in summary zone (no transaction date) — skip
+                    continue
+                else:
+                    in_summary = False  # New transaction date — resume
 
             # ── Check for mid-page currency section boundary ──
             # e.g. a standalone "USD" or "SGD" line in the data area
@@ -995,9 +1055,26 @@ def _try_extract_words(file_path: str) -> Optional[Dict]:
             has_txn_date = bool(date_text and date_re.search(date_text.strip()))
             is_balance_entry = bool(re.search(
                 r'BALANCE\s*[BC]/F|OPENING\s+BALANCE|CLOSING\s+BALANCE|'
-                r'BALANCE\s+BROUGHT|BALANCE\s+CARRIED',
+                r'BALANCE\s*BROUGHT|BALANCE\s*CARRIED',
                 desc_text, re.IGNORECASE,
             ))
+
+            # ── Track closing/opening balance boundaries ──
+            # After BALANCE CARRIED FORWARD, skip all rows until we see
+            # BALANCE BROUGHT FORWARD (avoids page summaries/footers)
+            is_opening = bool(re.search(
+                r'BALANCE\s*B/F|BALANCE\s*BROUGHT|OPENING\s+BALANCE',
+                desc_text, re.IGNORECASE,
+            ))
+            is_closing = bool(re.search(
+                r'BALANCE\s*C/F|BALANCE\s*CARRIED|CLOSING\s+BALANCE',
+                desc_text, re.IGNORECASE,
+            ))
+            if is_opening:
+                past_closing = False
+            elif past_closing and not is_balance_entry:
+                # We're in the footer zone after closing balance — skip row
+                continue
             # Treat '-' as zero (Aspire uses '-' for no amount)
             if w_text.strip() == '-':
                 w_text = ""
@@ -1012,6 +1089,10 @@ def _try_extract_words(file_path: str) -> Optional[Dict]:
                 if current_txn:
                     all_transactions.append(current_txn)
 
+                # Mark that we've passed a closing balance (for footer skipping)
+                if is_closing:
+                    past_closing = True
+
                 current_txn = {
                     "txn_date": date_text.strip(),
                     "value_date": cols.get("value_date", "").strip() or date_text.strip(),
@@ -1025,26 +1106,46 @@ def _try_extract_words(file_path: str) -> Optional[Dict]:
                     "page_number": page_idx + 1,
                 }
 
-            elif current_txn and amount_only:
-                # Amount row belonging to the current transaction
-                if not current_txn["withdrawal"] and w_text:
-                    current_txn["withdrawal"] = w_text
-                if not current_txn["deposit"] and d_text:
-                    current_txn["deposit"] = d_text
-                if not current_txn["balance"] and b_text:
-                    current_txn["balance"] = b_text
+            elif current_txn and has_amount:
+                # ── Check if this is a NEW sub-transaction (HSBC pattern) ──
+                # If the current transaction already has a balance AND this row
+                # has a new balance, it's a separate sub-transaction that
+                # inherits the date from the previous one.
+                txn_has_balance = bool(current_txn["balance"])
+                new_has_balance = bool(b_text)
+                if txn_has_balance and new_has_balance:
+                    # Flush current and start a new sub-transaction
+                    all_transactions.append(current_txn)
+                    current_txn = {
+                        "txn_date": current_txn["txn_date"],  # inherit date
+                        "value_date": current_txn["value_date"],
+                        "description": desc_text or "",
+                        "counterparty_text": cpty_text,
+                        "withdrawal": w_text,
+                        "deposit": d_text,
+                        "balance": b_text,
+                        "currency": current_currency,
+                        "account_section": current_account_section,
+                        "page_number": page_idx + 1,
+                    }
+                else:
+                    # Fill in missing amounts for the current transaction
+                    if has_desc:
+                        current_txn["description"] += " " + desc_text
+                        if cpty_text:
+                            current_txn["counterparty_text"] += " " + cpty_text
+                    if not current_txn["withdrawal"] and w_text:
+                        current_txn["withdrawal"] = w_text
+                    if not current_txn["deposit"] and d_text:
+                        current_txn["deposit"] = d_text
+                    if not current_txn["balance"] and b_text:
+                        current_txn["balance"] = b_text
 
             elif current_txn and has_desc:
-                # Description continuation (possibly with amounts)
+                # Description continuation (no amounts on this row)
                 current_txn["description"] += " " + desc_text
                 if cpty_text:
                     current_txn["counterparty_text"] += " " + cpty_text
-                if not current_txn["withdrawal"] and w_text:
-                    current_txn["withdrawal"] = w_text
-                if not current_txn["deposit"] and d_text:
-                    current_txn["deposit"] = d_text
-                if not current_txn["balance"] and b_text:
-                    current_txn["balance"] = b_text
 
         # Flush last transaction on the page
         if current_txn:
@@ -1065,28 +1166,34 @@ def _try_extract_words(file_path: str) -> Optional[Dict]:
 
         # Parse amounts — extract first valid number from each column text
         # (column text may include trailing watermark/reversed characters)
-        def _extract_amount(text: str) -> Optional[float]:
+        def _extract_amount(text: str, allow_dr: bool = False) -> Optional[float]:
             if not text:
                 return None
             cleaned = text.replace(" ", "").strip()
             if cleaned == '-' or cleaned == '':
                 return None
-            m = re.search(r'[\d,]+\.\d{2}', cleaned)
+            m = re.search(r'([\d,]+\.\d{2})\s*(DR)?', cleaned, re.IGNORECASE)
             if m:
-                return float(m.group().replace(",", ""))
+                val = float(m.group(1).replace(",", ""))
+                # DR suffix means debit/negative balance (HSBC convention)
+                if allow_dr and m.group(2):
+                    val = -val
+                return val
             return None
 
         withdrawal = _extract_amount(raw.get("withdrawal"))
         deposit = _extract_amount(raw.get("deposit"))
-        balance = _extract_amount(raw.get("balance"))
+        balance = _extract_amount(raw.get("balance"), allow_dr=True)
 
         # Determine transaction type
         if any(kw in desc_upper for kw in [
-            "BALANCE B/F", "BALANCE BROUGHT", "OPENING BALANCE",
+            "BALANCE B/F", "BALANCE BROUGHT", "BALANCEBROUGHT",
+            "OPENING BALANCE",
         ]):
             txn_type = "opening_balance"
         elif any(kw in desc_upper for kw in [
-            "BALANCE C/F", "BALANCE CARRIED", "CLOSING BALANCE",
+            "BALANCE C/F", "BALANCE CARRIED", "BALANCECARRIED",
+            "CLOSING BALANCE",
         ]):
             txn_type = "closing_balance"
             # For C/F, clear the withdrawal/deposit (those are summary totals)
