@@ -40,10 +40,14 @@ class Settings:
     SHARPNESS_SPREAD_RATIO: float = 0.5
     SHARPNESS_MAX_STD_DEV: float = 100.0
 
-    # CORS
+    # CORS — set ALLOWED_ORIGINS env var as comma-separated URLs for production
+    # e.g. ALLOWED_ORIGINS=https://thirdeye.example.com,http://localhost:3000
     ALLOWED_ORIGINS: list = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
+        x.strip()
+        for x in os.getenv(
+            "ALLOWED_ORIGINS",
+            "http://localhost:3000,http://127.0.0.1:3000"
+        ).split(",")
     ]
 
 

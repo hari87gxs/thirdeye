@@ -1,0 +1,41 @@
+# ── ThirdEye AI — Docker Compose ──────────────────────────────────────────────
+# Usage:
+#   cp .env.example .env          # fill in your Azure OpenAI keys
+#   docker compose up --build     # start both services
+#   open http://localhost:3000    # frontend
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: thirdeye-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=sqlite:///./third_eye.db
+    volumes:
+      - backend-uploads:/app/uploads
+      - backend-db:/app
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000/api
+    container_name: thirdeye-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  backend-uploads:
+  backend-db:
