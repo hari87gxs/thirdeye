@@ -5,6 +5,9 @@ import {
   AgentResult,
   TransactionsResponse,
   StatementMetrics,
+  GroupResults,
+  GroupStatus,
+  UploadGroup,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
@@ -87,6 +90,33 @@ export async function getTransactions(
 
 export async function getMetrics(documentId: string): Promise<StatementMetrics> {
   return fetchJSON<StatementMetrics>(`${API_BASE}/metrics/${documentId}`);
+}
+
+// ─── Group Analysis ──────────────────────────────────────────────────────────
+
+export async function listUploadGroups(): Promise<UploadGroup[]> {
+  return fetchJSON<UploadGroup[]>(`${API_BASE}/groups`);
+}
+
+export async function analyzeGroup(
+  uploadGroupId: string
+): Promise<{ message: string; upload_group_id: string; document_ids: string[] }> {
+  return fetchJSON(`${API_BASE}/analyze/group/${uploadGroupId}`, { method: "POST" });
+}
+
+export async function getGroupResults(uploadGroupId: string): Promise<GroupResults> {
+  return fetchJSON<GroupResults>(`${API_BASE}/results/group/${uploadGroupId}`);
+}
+
+export async function getGroupStatus(uploadGroupId: string): Promise<GroupStatus> {
+  return fetchJSON<GroupStatus>(`${API_BASE}/status/group/${uploadGroupId}`);
+}
+
+export async function getGroupMetrics(uploadGroupId: string): Promise<{
+  aggregated: import("./types").AggregatedMetrics | null;
+  per_statement: StatementMetrics[];
+}> {
+  return fetchJSON(`${API_BASE}/metrics/group/${uploadGroupId}`);
 }
 
 // ─── Health ──────────────────────────────────────────────────────────────────

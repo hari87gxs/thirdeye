@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Union
 from sqlalchemy.orm import Session
 
 from agents.base import BaseAgent
-from models import Document, RawTransaction, StatementMetrics
+from models import Document, RawTransaction, StatementMetrics, AggregatedMetrics
 from services.llm_client import chat_completion
 
 logger = logging.getLogger("ThirdEye.Agent.Insights")
@@ -181,6 +181,331 @@ class InsightsAgent(BaseAgent):
             "summary": summary,
             "risk_level": risk_level,
         }
+
+    def run_group(self, upload_group_id: str, db: Session) -> dict:
+        """Run group-level insights across ALL statements in an upload group.
+
+        Aggregates transactions from all documents, computes cross-statement
+        trends (monthly flows, balance trajectory), and generates a combined
+        LLM narrative covering the full statement period.
+        """
+        logger.info(f"📊 Group insights agent running for group {upload_group_id}")
+
+        # ── Fetch ALL transactions across the group ──
+        transactions = (
+            db.query(RawTransaction)
+            .filter(RawTransaction.upload_group_id == upload_group_id)
+            .all()
+        )
+        all_metrics = (
+            db.query(StatementMetrics)
+            .filter(StatementMetrics.upload_group_id == upload_group_id)
+            .order_by(StatementMetrics.statement_period)
+            .all()
+        )
+        agg_metrics = (
+            db.query(AggregatedMetrics)
+            .filter(AggregatedMetrics.upload_group_id == upload_group_id)
+            .first()
+        )
+
+        if not transactions:
+            return self._error("No transactions found across group — run extraction first")
+
+        total_docs = len(all_metrics)
+        logger.info(
+            f"  📊 Analyzing {len(transactions)} transactions across {total_docs} statements..."
+        )
+
+        # ── Build all insight sections (using all transactions) ──
+        combined_metrics = all_metrics[0] if all_metrics else None
+        category_breakdown = self._category_analysis(transactions)
+        cash_flow = self._cash_flow_analysis(transactions, combined_metrics)
+        top_counterparties = self._counterparty_analysis(transactions)
+        unusual_txns = self._unusual_transaction_detection(transactions, combined_metrics)
+        day_patterns = self._day_of_month_patterns(transactions)
+        channel_analysis = self._channel_analysis(transactions)
+
+        # ── Monthly trends across statements ──
+        monthly_trends = self._monthly_trends(transactions, all_metrics)
+
+        # ── Combined business health (use aggregated metrics) ──
+        business_health = self._group_business_health(transactions, all_metrics, agg_metrics)
+
+        # ── Per-statement summary ──
+        per_statement = []
+        for m in all_metrics:
+            per_statement.append({
+                "document_id": m.document_id,
+                "period": m.statement_period,
+                "bank": m.bank,
+                "opening_balance": m.opening_balance,
+                "closing_balance": m.closing_balance,
+                "total_credits": m.total_amount_of_credit_transactions,
+                "total_debits": m.total_amount_of_debit_transactions,
+                "credit_count": m.total_no_of_credit_transactions,
+                "debit_count": m.total_no_of_debit_transactions,
+            })
+
+        # ── LLM narrative ──
+        insights_data = {
+            "account_holder": agg_metrics.account_holder if agg_metrics else (
+                all_metrics[0].account_holder if all_metrics else "Unknown"
+            ),
+            "bank": agg_metrics.bank if agg_metrics else (
+                all_metrics[0].bank if all_metrics else "Unknown"
+            ),
+            "period": agg_metrics.period_covered if agg_metrics else "Multiple statements",
+            "opening_balance": all_metrics[0].opening_balance if all_metrics else 0,
+            "closing_balance": all_metrics[-1].closing_balance if all_metrics else 0,
+            "total_transactions": len(transactions),
+            "total_statements": total_docs,
+            "category_breakdown": category_breakdown,
+            "cash_flow": cash_flow,
+            "top_counterparties": top_counterparties,
+            "unusual_transactions": unusual_txns,
+            "day_patterns": day_patterns,
+            "channel_analysis": channel_analysis,
+            "business_health": business_health,
+            "monthly_trends": monthly_trends,
+        }
+
+        logger.info("  🤖 Generating group LLM narrative...")
+        narrative = self._generate_group_narrative(insights_data)
+
+        risk_level = self._assess_risk(insights_data)
+
+        results = {
+            "total_statements": total_docs,
+            "total_transactions": len(transactions),
+            "per_statement_summary": per_statement,
+            "category_breakdown": category_breakdown,
+            "cash_flow": cash_flow,
+            "top_counterparties": top_counterparties,
+            "unusual_transactions": unusual_txns,
+            "day_of_month_patterns": day_patterns,
+            "channel_analysis": channel_analysis,
+            "business_health": business_health,
+            "monthly_trends": monthly_trends,
+            "narrative": narrative,
+        }
+
+        summary_parts = [
+            f"Statements: {total_docs}",
+            f"Transactions: {len(transactions)}",
+            f"Net cash flow: {(cash_flow.get('net_flow') or 0):,.2f}",
+            f"Top category: {category_breakdown.get('top_debit_category', 'N/A')}",
+            f"Risk: {risk_level}",
+        ]
+        summary = " | ".join(p for p in summary_parts if p)
+
+        logger.info(f"  ✅ Group insights complete — risk: {risk_level}")
+
+        return {
+            "results": results,
+            "summary": summary,
+            "risk_level": risk_level,
+        }
+
+    def _monthly_trends(self, transactions: List[RawTransaction], all_metrics: list) -> dict:
+        """Compute monthly trends across multiple statements."""
+        monthly_data = defaultdict(lambda: {
+            "credits": 0.0, "debits": 0.0, "credit_count": 0, "debit_count": 0,
+        })
+
+        for t in transactions:
+            month = _parse_month(t.date)
+            if not month:
+                continue
+            if t.transaction_type == "credit":
+                monthly_data[month]["credits"] += t.amount or 0
+                monthly_data[month]["credit_count"] += 1
+            elif t.transaction_type == "debit":
+                monthly_data[month]["debits"] += t.amount or 0
+                monthly_data[month]["debit_count"] += 1
+
+        # Sort by month order
+        sorted_months = sorted(monthly_data.keys(), key=lambda m: MONTH_MAP.get(m, 0))
+        monthly_flow = []
+        for month in sorted_months:
+            d = monthly_data[month]
+            monthly_flow.append({
+                "month": month,
+                "total_credits": round(d["credits"], 2),
+                "total_debits": round(d["debits"], 2),
+                "net_flow": round(d["credits"] - d["debits"], 2),
+                "credit_count": d["credit_count"],
+                "debit_count": d["debit_count"],
+            })
+
+        # Balance trajectory from per-statement metrics
+        balance_trajectory = []
+        for m in all_metrics:
+            balance_trajectory.append({
+                "period": m.statement_period,
+                "opening_balance": m.opening_balance,
+                "closing_balance": m.closing_balance,
+                "max_balance": m.max_eod_balance,
+                "min_balance": m.min_eod_balance,
+            })
+
+        return {
+            "monthly_flow": monthly_flow,
+            "balance_trajectory": balance_trajectory,
+            "total_months": len(sorted_months),
+        }
+
+    def _group_business_health(
+        self,
+        transactions: List[RawTransaction],
+        all_metrics: list,
+        agg_metrics,
+    ) -> dict:
+        """Compute business health indicators across all statements."""
+        if not all_metrics:
+            return {"score": 0, "indicators": {}, "assessment": "Insufficient data"}
+
+        indicators = {}
+
+        # Overall balance trend
+        first_opening = all_metrics[0].opening_balance or 0
+        last_closing = all_metrics[-1].closing_balance or 0
+        balance_change = last_closing - first_opening
+        indicators["overall_balance_change"] = round(balance_change, 2)
+        indicators["overall_balance_change_pct"] = (
+            round(balance_change / first_opening * 100, 1) if first_opening else 0
+        )
+        indicators["balance_trend"] = "growing" if balance_change > 0 else "declining"
+
+        # Total volume across all statements
+        total_in = sum(m.total_amount_of_credit_transactions or 0 for m in all_metrics)
+        total_out = sum(m.total_amount_of_debit_transactions or 0 for m in all_metrics)
+        indicators["total_credits_all"] = round(total_in, 2)
+        indicators["total_debits_all"] = round(total_out, 2)
+        indicators["revenue_coverage_ratio"] = round(total_in / total_out, 3) if total_out else 0
+
+        # Monthly average
+        num_months = len(all_metrics) or 1
+        indicators["avg_monthly_credits"] = round(total_in / num_months, 2)
+        indicators["avg_monthly_debits"] = round(total_out / num_months, 2)
+        indicators["avg_monthly_net"] = round((total_in - total_out) / num_months, 2)
+
+        # Cash runway
+        avg_monthly_out = total_out / num_months if num_months else 0
+        runway = last_closing / avg_monthly_out if avg_monthly_out > 0 else 0
+        indicators["cash_runway_months"] = round(runway, 2)
+
+        # Balance volatility
+        closings = [m.closing_balance or 0 for m in all_metrics]
+        if len(closings) > 1:
+            import statistics as stats
+            indicators["balance_std_dev"] = round(stats.stdev(closings), 2)
+            indicators["balance_cv"] = round(
+                stats.stdev(closings) / stats.mean(closings) * 100, 1
+            ) if stats.mean(closings) > 0 else 0
+        else:
+            indicators["balance_std_dev"] = 0
+            indicators["balance_cv"] = 0
+
+        # Score
+        score = 50
+        coverage = indicators["revenue_coverage_ratio"]
+        if coverage >= 1.0:
+            score += 10
+        if coverage >= 0.8:
+            score += 5
+        if balance_change > 0:
+            score += 10
+        if runway >= 1.0:
+            score += 10
+        elif runway >= 0.5:
+            score += 5
+        if coverage < 0.5:
+            score -= 15
+        if balance_change < -first_opening * 0.3:
+            score -= 10
+        if runway < 0.2:
+            score -= 10
+
+        score = max(0, min(100, score))
+
+        if score >= 80:
+            assessment = "Strong — healthy cash flows across the analysis period"
+        elif score >= 60:
+            assessment = "Moderate — stable with some areas to watch"
+        elif score >= 40:
+            assessment = "Caution — cash flow strain detected across statements"
+        else:
+            assessment = "Concern — significant cash flow issues across the period"
+
+        return {
+            "score": score,
+            "assessment": assessment,
+            "indicators": indicators,
+            "statements_analyzed": len(all_metrics),
+        }
+
+    def _generate_group_narrative(self, data: dict) -> dict:
+        """Generate LLM narrative for group-level insights."""
+        prompt = f"""You are a senior financial analyst reviewing MULTIPLE bank statements for the same customer.
+Generate a comprehensive narrative analysis covering the full period.
+
+**Account**: {data['account_holder']} at {data['bank']}
+**Period**: {data['period']}
+**Total Statements**: {data['total_statements']}
+**Total Transactions**: {data['total_transactions']}
+**Opening Balance (first statement)**: {(data['opening_balance'] or 0):,.2f}
+**Closing Balance (last statement)**: {(data['closing_balance'] or 0):,.2f}
+
+**Category Breakdown (Top Debits)**:
+{json.dumps(data['category_breakdown']['debit_categories'][:5], indent=2)}
+
+**Top Vendors**:
+{json.dumps(data['top_counterparties']['top_vendors'][:8], indent=2)}
+
+**Cash Flow**:
+- Total Inflow: {(data['cash_flow'].get('total_inflow') or 0):,.2f}
+- Total Outflow: {(data['cash_flow'].get('total_outflow') or 0):,.2f}
+- Net Flow: {(data['cash_flow'].get('net_flow') or 0):,.2f}
+
+**Monthly Trends**:
+{json.dumps(data.get('monthly_trends', {}).get('monthly_flow', []), indent=2)}
+
+**Business Health Score**: {data['business_health']['score']}/100 — {data['business_health']['assessment']}
+
+Return a JSON object with these keys:
+{{
+  "executive_summary": "3-4 sentence high-level summary covering the full period",
+  "spending_analysis": "3-4 sentences on spending patterns and trends across months",
+  "income_analysis": "2-3 sentences on income stability and sources",
+  "cash_flow_assessment": "3-4 sentences on cash flow trajectory and sustainability",
+  "trend_analysis": "2-3 sentences on month-over-month trends and patterns",
+  "risk_observations": "2-3 sentences on concerning patterns across statements",
+  "recommendations": ["recommendation 1", "recommendation 2", "recommendation 3", "recommendation 4"]
+}}
+"""
+        try:
+            response = chat_completion(
+                messages=[
+                    {"role": "system", "content": "You are a senior financial analyst. Return ONLY valid JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=2500,
+                response_format={"type": "json_object"},
+            )
+            return json.loads(response)
+        except Exception as e:
+            logger.error(f"Group LLM narrative failed: {e}")
+            return {
+                "executive_summary": "Group narrative generation failed — see structured data.",
+                "spending_analysis": "",
+                "income_analysis": "",
+                "cash_flow_assessment": "",
+                "trend_analysis": "",
+                "risk_observations": "",
+                "recommendations": [],
+            }
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  Insight Generators
@@ -370,12 +695,17 @@ class InsightsAgent(BaseAgent):
             threshold = avg_debit * 3
             for t in debits:
                 if t.amount >= threshold:
+                    multiple = t.amount / avg_debit
                     unusual.append({
                         "type": "large_debit",
                         "date": t.date,
                         "description": t.description,
                         "amount": t.amount,
                         "reason": f"Amount ({t.amount:,.2f}) is >3x the average debit ({avg_debit:,.2f})",
+                        "explanation": f"This outgoing payment of {t.amount:,.2f} is {multiple:.1f}x the average "
+                                       f"debit of {avg_debit:,.2f}. Transactions significantly above the account's "
+                                       f"typical spending pattern may indicate bulk payments, one-off capital "
+                                       f"expenditures, or potentially unauthorized large withdrawals.",
                     })
 
         if credits:
@@ -383,12 +713,17 @@ class InsightsAgent(BaseAgent):
             threshold = avg_credit * 3
             for t in credits:
                 if t.amount >= threshold:
+                    multiple = t.amount / avg_credit
                     unusual.append({
                         "type": "large_credit",
                         "date": t.date,
                         "description": t.description,
                         "amount": t.amount,
                         "reason": f"Amount ({t.amount:,.2f}) is >3x the average credit ({avg_credit:,.2f})",
+                        "explanation": f"This incoming payment of {t.amount:,.2f} is {multiple:.1f}x the average "
+                                       f"credit of {avg_credit:,.2f}. Unusually large inflows may represent "
+                                       f"one-off settlements, large client payments, loan disbursements, or "
+                                       f"irregular deposits that merit source verification.",
                     })
 
         # 2. Round number transactions (exact thousands — could indicate manual transfers)
@@ -401,6 +736,10 @@ class InsightsAgent(BaseAgent):
                     "description": t.description,
                     "amount": t.amount,
                     "transaction_type": t.transaction_type,
+                    "reason": f"Exact round amount of {t.amount:,.0f} — may indicate a manual or structured transfer rather than an organic payment",
+                    "explanation": f"This {t.transaction_type or 'transaction'} of {t.amount:,.2f} is an exact multiple of 1,000. "
+                                   f"Round-number transactions can signal manual transfers, loan repayments, or "
+                                   f"structured deposits that warrant closer review.",
                 })
 
         # 3. Same-day large movements (both in and out on same day)
@@ -415,12 +754,19 @@ class InsightsAgent(BaseAgent):
         same_day_flags = []
         for day, mv in day_movements.items():
             if mv["credits"] > 5000 and mv["debits"] > 5000:
+                net = round(mv["credits"] - mv["debits"], 2)
                 same_day_flags.append({
                     "type": "same_day_large_movement",
                     "date": day,
                     "credits": round(mv["credits"], 2),
                     "debits": round(mv["debits"], 2),
+                    "amount": round(mv["credits"] + mv["debits"], 2),
                     "reason": "Both large credits and debits on the same day",
+                    "description": f"Credits: {mv['credits']:,.2f} | Debits: {mv['debits']:,.2f} | Net: {net:,.2f}",
+                    "explanation": f"On {day}, the account received {mv['credits']:,.2f} in credits and "
+                                   f"sent out {mv['debits']:,.2f} in debits (net: {net:,.2f}). "
+                                   f"Same-day large bi-directional flows can indicate pass-through activity, "
+                                   f"money laundering layering, or fund restructuring.",
                 })
 
         # 4. Low balance alerts
@@ -432,7 +778,12 @@ class InsightsAgent(BaseAgent):
                     "type": "low_balance",
                     "date": t.date,
                     "balance": t.balance,
+                    "amount": t.balance,
                     "description": t.description,
+                    "reason": f"Account balance dropped to {t.balance:,.2f}",
+                    "explanation": f"After transaction '{(t.description or 'N/A')[:60]}', the account balance "
+                                   f"fell to {t.balance:,.2f}. Low balances may indicate cash flow stress, "
+                                   f"over-commitment, or an impending overdraft.",
                 })
                 seen_dates.add(t.date)
 

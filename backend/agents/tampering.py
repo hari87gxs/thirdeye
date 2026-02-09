@@ -502,3 +502,200 @@ class TamperingAgent(BaseAgent):
             "summary": summary,
             "risk_level": risk_level,
         }
+
+    def run_group(self, upload_group_id: str, db: Session) -> dict:
+        """Run tampering analysis across ALL documents in an upload group.
+
+        For each document, aggregates the per-document results and adds
+        cross-document consistency checks (e.g. do all PDFs share the same
+        creator/producer?  Are sharpness levels consistent?).
+        """
+        logger.info(f"🔍 Group tampering agent starting for group {upload_group_id}")
+
+        docs = (
+            db.query(Document)
+            .filter(Document.upload_group_id == upload_group_id)
+            .all()
+        )
+
+        if not docs:
+            return {
+                "results": {"error": "No documents found"},
+                "summary": "No documents found in group",
+                "risk_level": "low",
+            }
+
+        logger.info(f"  📄 Running cross-document tampering checks on {len(docs)} PDFs...")
+
+        # ── Collect per-document summaries from existing agent results ──
+        from models import AgentResult
+        per_doc_summaries = []
+        all_per_doc_checks = []
+
+        for doc in docs:
+            result = (
+                db.query(AgentResult)
+                .filter(
+                    AgentResult.document_id == doc.id,
+                    AgentResult.agent_type == "tampering",
+                )
+                .first()
+            )
+            doc_summary = {
+                "document_id": doc.id,
+                "filename": doc.original_filename,
+                "status": result.status if result else "not_run",
+                "risk_level": result.risk_level if result else "unknown",
+                "pass_count": 0,
+                "fail_count": 0,
+                "warning_count": 0,
+            }
+            if result and result.results:
+                r = result.results
+                doc_summary["pass_count"] = r.get("pass_count", 0)
+                doc_summary["fail_count"] = r.get("fail_count", 0)
+                doc_summary["warning_count"] = r.get("warning_count", 0)
+                all_per_doc_checks.extend(r.get("checks", []))
+            per_doc_summaries.append(doc_summary)
+
+        # ── Cross-document checks ──
+        checks: list[dict] = []
+
+        # Check 1: Creator/Producer consistency across documents
+        checks.append(self._check_cross_creator_consistency(docs))
+
+        # Check 2: Sharpness consistency across documents
+        checks.append(self._check_cross_sharpness_consistency(docs))
+
+        # Check 3: Aggregate per-document tampering failures
+        total_fails = sum(d["fail_count"] for d in per_doc_summaries)
+        total_warns = sum(d["warning_count"] for d in per_doc_summaries)
+        if total_fails == 0 and total_warns <= len(docs):
+            checks.append({
+                "check": "Per-Document Tampering Summary",
+                "status": "pass",
+                "details": (
+                    f"All {len(docs)} documents have clean tampering checks "
+                    f"({total_warns} minor warnings)."
+                ),
+            })
+        elif total_fails > 0:
+            failed_docs = [d["filename"] for d in per_doc_summaries if d["fail_count"] > 0]
+            checks.append({
+                "check": "Per-Document Tampering Summary",
+                "status": "fail",
+                "details": (
+                    f"{total_fails} tampering check failure(s) across documents: "
+                    f"{', '.join(failed_docs)}."
+                ),
+            })
+        else:
+            checks.append({
+                "check": "Per-Document Tampering Summary",
+                "status": "warning",
+                "details": f"{total_warns} warning(s) across {len(docs)} documents.",
+            })
+
+        # ── Compute risk ──
+        risk_level, risk_score, summary = _compute_risk(checks)
+
+        logger.info(
+            f"  🔍 Group tampering result: {risk_level} (score={risk_score}) — {summary}"
+        )
+
+        return {
+            "results": {
+                "checks": checks,
+                "per_document_summary": per_doc_summaries,
+                "risk_score": risk_score,
+                "pass_count": sum(1 for c in checks if c["status"] == "pass"),
+                "fail_count": sum(1 for c in checks if c["status"] == "fail"),
+                "warning_count": sum(1 for c in checks if c["status"] == "warning"),
+                "total_checks": len(checks),
+                "documents_analyzed": len(docs),
+            },
+            "summary": f"[{len(docs)} documents] {summary}",
+            "risk_level": risk_level,
+        }
+
+    def _check_cross_creator_consistency(self, docs: list) -> dict:
+        """Check that all PDFs were produced by the same tool (consistent source)."""
+        name = "Cross-Document Creator Consistency"
+        creators = {}
+        producers = {}
+
+        for doc in docs:
+            try:
+                pdf = fitz.open(doc.file_path)
+                meta = pdf.metadata or {}
+                pdf.close()
+                creator = (meta.get("creator") or "").strip() or "Unknown"
+                producer = (meta.get("producer") or "").strip() or "Unknown"
+                creators[doc.original_filename] = creator
+                producers[doc.original_filename] = producer
+            except Exception:
+                creators[doc.original_filename] = "Error"
+                producers[doc.original_filename] = "Error"
+
+        unique_creators = set(creators.values()) - {"Unknown", "Error"}
+        unique_producers = set(producers.values()) - {"Unknown", "Error"}
+
+        if len(unique_creators) <= 1 and len(unique_producers) <= 1:
+            return {
+                "check": name,
+                "status": "pass",
+                "details": (
+                    f"All {len(docs)} documents have consistent creator/producer metadata. "
+                    f"Creator: {unique_creators or {'N/A'}}, Producer: {unique_producers or {'N/A'}}"
+                ),
+            }
+
+        return {
+            "check": name,
+            "status": "warning" if len(unique_creators) <= 2 else "fail",
+            "details": (
+                f"Inconsistent PDF tools detected across documents. "
+                f"Creators: {dict(creators)}, Producers: {dict(producers)}"
+            ),
+        }
+
+    def _check_cross_sharpness_consistency(self, docs: list) -> dict:
+        """Check that page sharpness is consistent across all documents."""
+        name = "Cross-Document Sharpness Consistency"
+        doc_sharpnesses = {}
+
+        for doc in docs:
+            try:
+                img = _pdf_page_to_pil(doc.file_path, 0, dpi=150)
+                lap = _laplacian_variance(img)
+                doc_sharpnesses[doc.original_filename] = round(lap, 2)
+            except Exception:
+                doc_sharpnesses[doc.original_filename] = 0
+
+        values = list(doc_sharpnesses.values())
+        if len(values) < 2:
+            return {"check": name, "status": "pass",
+                    "details": "Only one document — consistency check not applicable."}
+
+        max_v = max(values)
+        min_v = min(values)
+        ratio = min_v / max_v if max_v > 0 else 1
+
+        if ratio >= 0.3:
+            return {
+                "check": name,
+                "status": "pass",
+                "details": (
+                    f"Sharpness is consistent across {len(docs)} documents. "
+                    f"Values: {doc_sharpnesses}"
+                ),
+            }
+
+        return {
+            "check": name,
+            "status": "fail",
+            "details": (
+                f"Significant sharpness variation across documents (ratio: {ratio:.2f}). "
+                f"Values: {doc_sharpnesses} — some documents may be scanned copies."
+            ),
+        }

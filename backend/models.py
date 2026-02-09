@@ -224,3 +224,23 @@ class AgentResult(Base):
     created_at = Column(DateTime, default=utcnow)
 
     document = relationship("Document", back_populates="agent_results")
+
+
+class GroupAgentResult(Base):
+    """Group-level agent results aggregated across all documents in an upload group."""
+    __tablename__ = "group_agent_results"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    upload_group_id = Column(String, nullable=False, index=True)
+    agent_type = Column(String, nullable=False)  # insights, tampering, fraud
+    status = Column(String, default=AgentStatus.PENDING.value)
+
+    # Results stored as JSON
+    results = Column(JSON)
+    summary = Column(Text)
+    risk_level = Column(String)
+
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    error_message = Column(Text)
+    created_at = Column(DateTime, default=utcnow)

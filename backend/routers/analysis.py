@@ -2,8 +2,8 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy.orm import Session
 from database import get_db
-from models import Document, AgentResult, AgentType, AgentStatus, DocumentStatus, RawTransaction, StatementMetrics, AggregatedMetrics
-from schemas import AgentResultResponse, DocumentAnalysisResponse, DocumentResponse, TransactionResponse, StatementMetricsResponse, AggregatedMetricsResponse
+from models import Document, AgentResult, GroupAgentResult, AgentType, AgentStatus, DocumentStatus, RawTransaction, StatementMetrics, AggregatedMetrics
+from schemas import AgentResultResponse, GroupAgentResultResponse, DocumentAnalysisResponse, DocumentResponse, TransactionResponse, StatementMetricsResponse, AggregatedMetricsResponse
 from orchestrator import run_all_agents
 
 logger = logging.getLogger("ThirdEye.Analysis")
@@ -91,6 +91,44 @@ async def analyze_group(
     }
 
 
+@router.get("/results/group/{upload_group_id}")
+def get_group_results(upload_group_id: str, db: Session = Depends(get_db)):
+    """Get results for all documents in an upload group, including group-level agent results."""
+    docs = db.query(Document).filter(Document.upload_group_id == upload_group_id).all()
+    if not docs:
+        raise HTTPException(status_code=404, detail="No documents found for this upload group")
+
+    per_doc_results = []
+    for doc in docs:
+        results = db.query(AgentResult).filter(AgentResult.document_id == doc.id).all()
+        per_doc_results.append({
+            "document": DocumentResponse.model_validate(doc).model_dump(),
+            "agents": {
+                r.agent_type: AgentResultResponse.model_validate(r).model_dump() for r in results
+            },
+        })
+
+    # Group-level agent results
+    group_agent_results = (
+        db.query(GroupAgentResult)
+        .filter(GroupAgentResult.upload_group_id == upload_group_id)
+        .all()
+    )
+
+    # Aggregated metrics
+    agg = db.query(AggregatedMetrics).filter(AggregatedMetrics.upload_group_id == upload_group_id).first()
+
+    return {
+        "upload_group_id": upload_group_id,
+        "documents": per_doc_results,
+        "group_agents": {
+            r.agent_type: GroupAgentResultResponse.model_validate(r).model_dump()
+            for r in group_agent_results
+        } if group_agent_results else {},
+        "aggregated_metrics": AggregatedMetricsResponse.model_validate(agg).model_dump() if agg else None,
+    }
+
+
 @router.get("/results/{document_id}")
 def get_results(document_id: str, db: Session = Depends(get_db)):
     """Get all agent results for a document."""
@@ -122,26 +160,58 @@ def get_agent_result(document_id: str, agent_type: str, db: Session = Depends(ge
     return AgentResultResponse.model_validate(result).model_dump()
 
 
-@router.get("/results/group/{upload_group_id}")
-def get_group_results(upload_group_id: str, db: Session = Depends(get_db)):
-    """Get results for all documents in an upload group."""
+@router.get("/status/group/{upload_group_id}")
+def get_group_status(upload_group_id: str, db: Session = Depends(get_db)):
+    """Get processing status for an upload group — used by frontend polling."""
     docs = db.query(Document).filter(Document.upload_group_id == upload_group_id).all()
     if not docs:
         raise HTTPException(status_code=404, detail="No documents found for this upload group")
 
-    group_results = []
-    for doc in docs:
-        results = db.query(AgentResult).filter(AgentResult.document_id == doc.id).all()
-        group_results.append({
-            "document": DocumentResponse.model_validate(doc).model_dump(),
-            "agents": {
-                r.agent_type: AgentResultResponse.model_validate(r).model_dump() for r in results
-            },
-        })
+    total = len(docs)
+    completed = sum(1 for d in docs if d.status == DocumentStatus.COMPLETED.value)
+    failed = sum(1 for d in docs if d.status == DocumentStatus.FAILED.value)
+    processing = sum(1 for d in docs if d.status == DocumentStatus.PROCESSING.value)
+
+    # Group-level agent status
+    group_agent_results = (
+        db.query(GroupAgentResult)
+        .filter(GroupAgentResult.upload_group_id == upload_group_id)
+        .all()
+    )
+    group_agents_status = {
+        r.agent_type: r.status for r in group_agent_results
+    }
+
+    # Overall group status
+    if all(d.status == DocumentStatus.COMPLETED.value for d in docs):
+        if len(docs) > 1 and group_agent_results:
+            if all(r.status == AgentStatus.COMPLETED.value for r in group_agent_results):
+                overall = "completed"
+            elif any(r.status == AgentStatus.FAILED.value for r in group_agent_results):
+                overall = "completed"  # individual docs done, group analysis partial
+            else:
+                overall = "group_processing"
+        else:
+            overall = "completed"
+    elif failed == total:
+        overall = "failed"
+    elif processing > 0 or completed < total:
+        overall = "processing"
+    else:
+        overall = "uploaded"
 
     return {
         "upload_group_id": upload_group_id,
-        "documents": group_results,
+        "overall_status": overall,
+        "total_documents": total,
+        "completed": completed,
+        "processing": processing,
+        "failed": failed,
+        "documents": [
+            {"id": d.id, "filename": d.original_filename, "status": d.status}
+            for d in docs
+        ],
+        "group_agents": group_agents_status,
     }
 
 

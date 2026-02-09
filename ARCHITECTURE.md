@@ -104,9 +104,11 @@ POST /api/documents/{id}/analyze
 Orchestrator (background):
   → Extraction Agent → stores results + raw transactions + metrics
   → Tampering Agent → stores check results + risk score
-  → Fraud Agent → stores check results + flagged transactions
-  → Insights Agent → stores analytics + narrative
+  → Fraud Agent → stores check results + flagged transactions (with explanations)
+  → Insights Agent → stores analytics + narrative (with unusual txn explanations)
   → Sets document status → "completed"
+  → Checks if all docs in upload group are done
+  → If yes, auto-triggers group-level agents for cross-statement analysis
 ```
 
 ### 3. Results Polling Flow
@@ -335,8 +337,7 @@ Generates business intelligence from the extracted transaction data. **7 analyti
 │  │ Large (>3x)   │  │ Busiest day │  │ FAST/GIRO/ATM│ │
 │  │ Round numbers │  │ Quietest day│  │ PayNow/NETS   │ │
 │  │ Same-day mvmt │  │ Peak value  │  │ Percentages   │ │
-│  │ Low balance   │  │             │  │               │ │
-│  └──────────────┘  └─────────────┘  └───────────────┘ │
+│  │ Low balance   │  │             │  │               │ ││  │  + explanations│  │             │  │               │ ││  └──────────────┘  └─────────────┘  └───────────────┘ │
 │                                                         │
 │  ┌────────────────────────────────────────────────────┐ │
 │  │           Business Health Score (0–100)             │ │
@@ -419,12 +420,17 @@ Runs **8 fraud detection checks** (7 statistical/rule-based + 1 LLM-powered):
 ### Page Structure
 
 ```
-/                              → HomePage (upload + document list)
+/                              → HomePage (upload + grouped document list)
 /documents/[id]                → DocumentOverview (4 agent cards with scores)
 /documents/[id]/extraction     → ExtractionPage (accuracy, transactions, balance chart)
-/documents/[id]/insights       → InsightsPage (cash flow, categories, health, narrative)
+/documents/[id]/insights       → InsightsPage (cash flow, categories, health, unusual txn explanations)
 /documents/[id]/tampering      → TamperingPage (8 check results, risk score)
-/documents/[id]/fraud          → FraudPage (8 check results, flagged transactions)
+/documents/[id]/fraud          → FraudPage (8 checks with flagged item explanations)
+/groups/[groupId]              → GroupOverview (4 cross-statement agent cards)
+/groups/[groupId]/extraction   → Cross-statement extraction summary
+/groups/[groupId]/insights     → Aggregated insights across all statements
+/groups/[groupId]/tampering    → Cross-statement tampering detection
+/groups/[groupId]/fraud        → Cross-statement fraud detection
 ```
 
 ### Data Flow

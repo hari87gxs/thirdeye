@@ -3,21 +3,24 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getAgentResult } from "@/lib/api";
-import { AgentResult, FraudResults, CheckResult } from "@/lib/types";
-import { cn, riskColor, riskBgColor, formatCurrency } from "@/lib/utils";
+import { getGroupResults } from "@/lib/api";
+import { GroupResults, AgentResult, FraudResults, CheckResult } from "@/lib/types";
+import { cn, formatCurrency, riskColor, riskBgColor } from "@/lib/utils";
 import {
   ArrowLeft,
-  AlertTriangle,
   Loader2,
-  CheckCircle2,
-  XCircle,
   ShieldCheck,
-  Info,
-  Siren,
-  Flag,
+  AlertTriangle,
+  XCircle,
+  ChevronRight,
+  FileText,
+  Layers,
   Search,
+  Flag,
+  Siren,
 } from "lucide-react";
+
+// ─── Fraud Check Card ────────────────────────────────────────────────────────
 
 function FraudCheckCard({ check }: { check: CheckResult }) {
   const isPassed = check.status?.toLowerCase() === "pass";
@@ -50,10 +53,9 @@ function FraudCheckCard({ check }: { check: CheckResult }) {
                 : "bg-amber-500/10"
             )}
           >
-            {isPassed && <CheckCircle2 className="h-4 w-4 text-emerald-400" />}
+            {isPassed && <ShieldCheck className="h-4 w-4 text-emerald-400" />}
             {isFailed && <XCircle className="h-4 w-4 text-red-400" />}
             {isWarning && <AlertTriangle className="h-4 w-4 text-amber-400" />}
-            {!isPassed && !isFailed && !isWarning && <Info className="h-4 w-4 text-zinc-400" />}
           </div>
           <div>
             <p className="text-sm font-semibold text-zinc-200">{check.check}</p>
@@ -122,7 +124,7 @@ function FraudCheckCard({ check }: { check: CheckResult }) {
                 </p>
               )}
             </div>
-          );
+            );
           })}
           {flaggedItems.length > 10 && (
             <p className="text-center text-[10px] text-zinc-600">
@@ -151,21 +153,79 @@ function FraudCheckCard({ check }: { check: CheckResult }) {
   );
 }
 
-export default function FraudPage() {
+// ─── Per-Document Summary Card ───────────────────────────────────────────────
+
+function DocSummaryCard({
+  doc,
+}: {
+  doc: { document_id: string; filename: string; risk_level: string; pass_count: number; fail_count: number; warning_count: number };
+}) {
+  const total = doc.pass_count + doc.fail_count + doc.warning_count;
+  return (
+    <Link
+      href={`/documents/${doc.document_id}/fraud`}
+      className="group flex items-center justify-between rounded-lg border border-zinc-800/50 bg-zinc-900/30 px-4 py-3 hover:border-zinc-700/50 hover:bg-zinc-900/60 transition-all"
+    >
+      <div className="flex items-center gap-3 min-w-0">
+        <FileText className="h-4 w-4 text-red-400 flex-shrink-0" />
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-zinc-200 truncate">{doc.filename}</p>
+          <p className="text-[10px] text-zinc-500">
+            {doc.pass_count} passed · {doc.warning_count} warnings · {doc.fail_count} failed — {total} total
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        <span
+          className={cn(
+            "rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider",
+            riskBgColor(doc.risk_level),
+            riskColor(doc.risk_level)
+          )}
+        >
+          {doc.risk_level}
+        </span>
+        <ChevronRight className="h-3.5 w-3.5 text-zinc-600 group-hover:text-zinc-400 transition-colors" />
+      </div>
+    </Link>
+  );
+}
+
+// ─── Main Page ───────────────────────────────────────────────────────────────
+
+export default function GroupFraudPage() {
   const params = useParams();
-  const documentId = params.id as string;
-  const [agentResult, setAgentResult] = useState<AgentResult | null>(null);
+  const groupId = params.groupId as string;
   const [loading, setLoading] = useState(true);
+  const [agentResult, setAgentResult] = useState<AgentResult | null>(null);
+  const [perDocSummaries, setPerDocSummaries] = useState<
+    { document_id: string; filename: string; risk_level: string; pass_count: number; fail_count: number; warning_count: number }[]
+  >([]);
 
   useEffect(() => {
-    if (!documentId) return;
-    getAgentResult(documentId, "fraud")
-      .then((r) => {
-        setAgentResult(r);
+    if (!groupId) return;
+    getGroupResults(groupId)
+      .then((gr: GroupResults) => {
+        const groupAgent = gr.group_agents?.fraud;
+        setAgentResult(groupAgent || null);
+
+        const summaries = gr.documents.map((da) => {
+          const r = da.agents?.fraud;
+          const res = (r?.results || {}) as FraudResults;
+          return {
+            document_id: da.document.id,
+            filename: da.document.original_filename,
+            risk_level: r?.risk_level || "unknown",
+            pass_count: res.pass_count ?? res.passed ?? (res.checks || []).filter((c) => c.status === "pass").length,
+            fail_count: res.fail_count ?? res.failed ?? (res.checks || []).filter((c) => c.status === "fail").length,
+            warning_count: res.warning_count ?? res.warnings ?? (res.checks || []).filter((c) => c.status === "warning").length,
+          };
+        });
+        setPerDocSummaries(summaries);
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [documentId]);
+  }, [groupId]);
 
   if (loading) {
     return (
@@ -183,8 +243,9 @@ export default function FraudPage() {
   const warnings = results.warning_count ?? results.warnings ?? checks.filter((c) => c.status === "warning").length;
   const failed = results.fail_count ?? results.failed ?? checks.filter((c) => c.status === "fail").length;
   const total = results.total_checks || checks.length;
+  const statementsAnalyzed = (results as Record<string, unknown>).statements_analyzed as number | undefined;
+  const totalTransactions = (results as Record<string, unknown>).total_transactions as number | undefined;
 
-  // Risk severity score visual
   const riskScore = overallRisk === "critical" ? 4 : overallRisk === "high" ? 3 : overallRisk === "medium" ? 2 : 1;
 
   return (
@@ -193,11 +254,11 @@ export default function FraudPage() {
       <div className="border-b border-zinc-800/50 bg-gradient-to-b from-red-500/[0.02] to-transparent">
         <div className="mx-auto max-w-6xl px-6 py-8">
           <Link
-            href={`/documents/${documentId}`}
+            href={`/groups/${groupId}`}
             className="mb-4 inline-flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
           >
             <ArrowLeft className="h-3 w-3" />
-            Back to Overview
+            Back to Group Overview
           </Link>
 
           <div className="flex items-center gap-3">
@@ -205,9 +266,15 @@ export default function FraudPage() {
               <AlertTriangle className="h-5 w-5 text-red-400" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-white">Fraud Detection Agent</h1>
+              <h1 className="text-2xl font-bold text-white">Cross-Statement Fraud Detection</h1>
               <p className="text-sm text-zinc-500">
-                Transaction pattern analysis, anomaly detection & risk scoring
+                <Layers className="inline h-3 w-3 mr-1" />
+                Group-level transaction pattern analysis, anomaly detection & cross-statement risk scoring
+                {statementsAnalyzed && totalTransactions && (
+                  <span className="ml-2 text-zinc-600">
+                    · {statementsAnalyzed} statements · {totalTransactions} transactions
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -217,7 +284,6 @@ export default function FraudPage() {
       <div className="mx-auto max-w-6xl px-6 py-8">
         {/* Summary Cards */}
         <div className="mb-8 grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {/* Overall Risk */}
           <div className={cn("rounded-xl border p-5", riskBgColor(overallRisk))}>
             <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-zinc-500">
               <Siren className="h-3 w-3" />
@@ -228,7 +294,6 @@ export default function FraudPage() {
             </p>
           </div>
 
-          {/* Passed */}
           <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-5">
             <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-zinc-500">
               <ShieldCheck className="h-3 w-3 text-emerald-400" />
@@ -237,7 +302,6 @@ export default function FraudPage() {
             <p className="mt-2 text-2xl font-bold text-emerald-400">{passed}/{total}</p>
           </div>
 
-          {/* Warnings */}
           <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-5">
             <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-zinc-500">
               <AlertTriangle className="h-3 w-3 text-amber-400" />
@@ -246,7 +310,6 @@ export default function FraudPage() {
             <p className="mt-2 text-2xl font-bold text-amber-400">{warnings}</p>
           </div>
 
-          {/* Failed */}
           <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-5">
             <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-zinc-500">
               <XCircle className="h-3 w-3 text-red-400" />
@@ -302,23 +365,23 @@ export default function FraudPage() {
           </div>
         </div>
 
-        {/* Individual Checks */}
+        {/* Detailed Check Results */}
         <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-zinc-300">
           <Search className="h-4 w-4 text-red-400" />
-          Detailed Check Results ({total} checks)
+          Cross-Statement Check Results ({total} checks)
         </h3>
-        <div className="space-y-3">
+        <div className="space-y-3 mb-8">
           {checks.map((check, i) => (
             <FraudCheckCard key={i} check={check} />
           ))}
           {checks.length === 0 && (
-            <p className="text-center text-sm text-zinc-500 py-8">No check results available</p>
+            <p className="text-center text-sm text-zinc-500 py-8">No group-level check results available</p>
           )}
         </div>
 
         {/* Flagged Transactions */}
         {flaggedTxns.length > 0 && (
-          <div className="mt-8 rounded-xl border border-zinc-800/50 bg-zinc-900/30 overflow-hidden">
+          <div className="mb-8 rounded-xl border border-zinc-800/50 bg-zinc-900/30 overflow-hidden">
             <div className="flex items-center gap-2 border-b border-zinc-800/50 px-5 py-4">
               <Flag className="h-4 w-4 text-red-400" />
               <h3 className="text-sm font-semibold text-zinc-300">Flagged Transactions ({flaggedTxns.length})</h3>
@@ -354,11 +417,26 @@ export default function FraudPage() {
           </div>
         )}
 
-        {/* Summary */}
+        {/* Agent Summary */}
         {agentResult?.summary && (
-          <div className="mt-8 rounded-xl border border-zinc-800/50 bg-zinc-900/30 p-5">
-            <h3 className="mb-3 text-sm font-semibold text-zinc-300">Agent Summary</h3>
+          <div className="mb-8 rounded-xl border border-zinc-800/50 bg-zinc-900/30 p-5">
+            <h3 className="mb-3 text-sm font-semibold text-zinc-300">Group Agent Summary</h3>
             <p className="text-sm leading-relaxed text-zinc-400 whitespace-pre-line">{agentResult.summary}</p>
+          </div>
+        )}
+
+        {/* Per-Document Breakdown */}
+        {perDocSummaries.length > 0 && (
+          <div>
+            <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-zinc-300">
+              <FileText className="h-4 w-4 text-red-400" />
+              Per-Statement Breakdown ({perDocSummaries.length} statements)
+            </h3>
+            <div className="space-y-2">
+              {perDocSummaries.map((doc) => (
+                <DocSummaryCard key={doc.document_id} doc={doc} />
+              ))}
+            </div>
           </div>
         )}
       </div>

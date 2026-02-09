@@ -96,6 +96,55 @@ export interface DocumentAnalysis {
   agents: Record<string, AgentResult>;
 }
 
+// ─── Group Types ─────────────────────────────────────────────────────────────
+
+export interface GroupResults {
+  upload_group_id: string;
+  documents: DocumentAnalysis[];
+  group_agents: Record<string, AgentResult>;
+  aggregated_metrics: AggregatedMetrics | null;
+}
+
+export interface GroupStatus {
+  upload_group_id: string;
+  overall_status: string; // uploaded, processing, group_processing, completed, failed
+  total_documents: number;
+  completed: number;
+  processing: number;
+  failed: number;
+  documents: Array<{ id: string; filename: string; status: string }>;
+  group_agents: Record<string, string>;
+}
+
+export interface UploadGroup {
+  upload_group_id: string;
+  documents: DocumentResponse[];
+  created_at: string | null;
+}
+
+export interface AggregatedMetrics {
+  account_holder: string | null;
+  bank: string | null;
+  account_number: string | null;
+  currency: string | null;
+  total_statements: number;
+  period_covered: string | null;
+  overall_max_eod_balance: number | null;
+  overall_min_eod_balance: number | null;
+  overall_avg_eod_balance: number | null;
+  total_credit_transactions: number;
+  total_credit_amount: number;
+  total_debit_transactions: number;
+  total_debit_amount: number;
+  overall_avg_deposit: number;
+  overall_avg_withdrawal: number;
+  overall_max_debit: number;
+  overall_max_credit: number;
+  monthly_credit_totals: Array<{ month: string; amount: number }> | null;
+  monthly_debit_totals: Array<{ month: string; amount: number }> | null;
+  monthly_balances: Array<{ month: string; opening: number; closing: number }> | null;
+}
+
 // ─── Check Result Type ───────────────────────────────────────────────────────
 
 export interface CheckResult {
@@ -103,6 +152,7 @@ export interface CheckResult {
   status: string; // pass, fail, warning
   details: string;
   metadata?: Record<string, unknown>;
+  flagged_items?: Array<Record<string, unknown>>;
 }
 
 // ─── Extraction Results Shape ────────────────────────────────────────────────

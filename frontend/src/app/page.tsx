@@ -6,6 +6,7 @@ import { DocumentList } from "@/components/documents/DocumentList";
 import {
   uploadDocuments,
   listDocuments,
+  analyzeGroup,
   analyzeDocument,
   deleteDocument,
 } from "@/lib/api";
@@ -44,13 +45,22 @@ export default function HomePage() {
       const result = await uploadDocuments(files);
       await loadDocuments();
 
-      // Auto-trigger analysis for each uploaded document
-      for (const doc of result.documents) {
-        try {
-          await analyzeDocument(doc.id);
+      // Trigger group-level analysis (backend analyzes all docs in the group)
+      try {
+        await analyzeGroup(result.upload_group_id);
+        // Mark all documents in the group as analyzing
+        for (const doc of result.documents) {
           setAnalyzingIds((prev) => new Set(prev).add(doc.id));
-        } catch {
-          // ignore individual analysis trigger errors
+        }
+      } catch {
+        // Fall back to individual analysis if group endpoint fails
+        for (const doc of result.documents) {
+          try {
+            await analyzeDocument(doc.id);
+            setAnalyzingIds((prev) => new Set(prev).add(doc.id));
+          } catch {
+            // ignore individual analysis trigger errors
+          }
         }
       }
     } catch (err) {

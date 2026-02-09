@@ -3,13 +3,13 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getAgentResult } from "@/lib/api";
-import { AgentResult, InsightsResults } from "@/lib/types";
+import { getGroupResults } from "@/lib/api";
+import { GroupResults, AgentResult, InsightsResults } from "@/lib/types";
 import { cn, formatCurrency } from "@/lib/utils";
 import {
   ArrowLeft,
-  BarChart3,
   Loader2,
+  BarChart3,
   TrendingUp,
   TrendingDown,
   Heart,
@@ -20,6 +20,9 @@ import {
   AlertCircle,
   Calendar,
   Radio,
+  Layers,
+  FileText,
+  ChevronRight,
 } from "lucide-react";
 import {
   BarChart,
@@ -35,21 +38,46 @@ import {
   Legend,
 } from "recharts";
 
-const COLORS = ["#6366f1", "#8b5cf6", "#a855f7", "#d946ef", "#ec4899", "#f43f5e", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#64748b"];
+const COLORS = [
+  "#6366f1", "#8b5cf6", "#a855f7", "#d946ef", "#ec4899",
+  "#f43f5e", "#f97316", "#eab308", "#22c55e", "#06b6d4",
+  "#3b82f6", "#64748b",
+];
 
-export default function InsightsPage() {
+// ─── Main Page ───────────────────────────────────────────────────────────────
+
+export default function GroupInsightsPage() {
   const params = useParams();
-  const documentId = params.id as string;
-  const [agentResult, setAgentResult] = useState<AgentResult | null>(null);
+  const groupId = params.groupId as string;
   const [loading, setLoading] = useState(true);
+  const [agentResult, setAgentResult] = useState<AgentResult | null>(null);
+  const [perDocInsights, setPerDocInsights] = useState<
+    { document_id: string; filename: string; risk_level: string; health_score: number | null }[]
+  >([]);
 
   useEffect(() => {
-    if (!documentId) return;
-    getAgentResult(documentId, "insights").then((r) => {
-      setAgentResult(r);
-      setLoading(false);
-    }).catch(() => setLoading(false));
-  }, [documentId]);
+    if (!groupId) return;
+    getGroupResults(groupId)
+      .then((gr: GroupResults) => {
+        const groupAgent = gr.group_agents?.insights;
+        setAgentResult(groupAgent || null);
+
+        const summaries = gr.documents.map((da) => {
+          const r = da.agents?.insights;
+          const res = (r?.results || {}) as InsightsResults;
+          const bh = res.business_health;
+          return {
+            document_id: da.document.id,
+            filename: da.document.original_filename,
+            risk_level: r?.risk_level || "unknown",
+            health_score: bh?.score ?? null,
+          };
+        });
+        setPerDocInsights(summaries);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, [groupId]);
 
   if (loading) {
     return (
@@ -69,13 +97,26 @@ export default function InsightsPage() {
   const health = results.business_health;
   const rawNarrative = results.narrative;
 
-  // ─── Normalize narrative: could be string or object with sections ────────
+  // Extra group-level fields
+  const totalStatements = (results as Record<string, unknown>).total_statements as number | undefined;
+  const totalTransactions = (results as Record<string, unknown>).total_transactions as number | undefined;
+  const perStatementSummary = (results as Record<string, unknown>).per_statement_summary as Array<{
+    document_id: string; period: string; bank: string;
+    opening_balance: number; closing_balance: number;
+    total_credits: number; total_debits: number;
+    credit_count: number; debit_count: number;
+  }> | undefined;
+
+  // ─── Normalize narrative ─────────────────────────────────────────────────
   let narrativeText = "";
   const narrativeSections: { title: string; content: string }[] = [];
   if (typeof rawNarrative === "string") {
     narrativeText = rawNarrative;
   } else if (rawNarrative && typeof rawNarrative === "object") {
-    const sectionOrder = ["executive_summary", "spending_analysis", "income_analysis", "cash_flow_assessment", "risk_observations", "recommendations"];
+    const sectionOrder = [
+      "executive_summary", "spending_analysis", "income_analysis",
+      "cash_flow_assessment", "risk_observations", "recommendations",
+    ];
     const labelMap: Record<string, string> = {
       executive_summary: "Executive Summary",
       spending_analysis: "Spending Analysis",
@@ -93,13 +134,15 @@ export default function InsightsPage() {
     }
   }
 
-  // ─── Normalize category_breakdown: could be old {name: {count,total}} or new {debit_categories: [...]} ───
-  // Merge same-label categories, keep top 5, group rest into "Other"
+  // ─── Normalize categories ────────────────────────────────────────────────
   let categoryData: { name: string; fullName: string; total: number; count: number }[] = [];
   if (rawCategories) {
     let rawList: { label: string; count: number; total: number }[] = [];
     if ("debit_categories" in rawCategories || "credit_categories" in rawCategories) {
-      const cats = rawCategories as { debit_categories?: { label: string; count: number; total: number }[]; credit_categories?: { label: string; count: number; total: number }[] };
+      const cats = rawCategories as {
+        debit_categories?: { label: string; count: number; total: number }[];
+        credit_categories?: { label: string; count: number; total: number }[];
+      };
       rawList = [...(cats.debit_categories || []), ...(cats.credit_categories || [])];
     } else {
       rawList = Object.entries(rawCategories as Record<string, { count: number; total: number }>)
@@ -109,8 +152,6 @@ export default function InsightsPage() {
           count: typeof data === "object" ? data.count : 0,
         }));
     }
-
-    // Merge duplicate labels (same category appearing in debit & credit)
     const merged = new Map<string, { count: number; total: number }>();
     for (const item of rawList) {
       const key = item.label;
@@ -122,24 +163,18 @@ export default function InsightsPage() {
         merged.set(key, { count: item.count, total: Math.abs(item.total) });
       }
     }
-
-    // Sort by total descending
     const sorted = Array.from(merged.entries())
       .map(([label, data]) => ({ label, ...data }))
       .sort((a, b) => b.total - a.total);
-
-    // Keep top 5, group the rest as "Other"
     const MAX_SLICES = 5;
     const top = sorted.slice(0, MAX_SLICES);
     const rest = sorted.slice(MAX_SLICES);
-
     categoryData = top.map((c) => ({
       name: c.label.length > 18 ? c.label.slice(0, 18) + "…" : c.label,
       fullName: c.label,
       total: c.total,
       count: c.count,
     }));
-
     if (rest.length > 0) {
       const otherTotal = rest.reduce((s, c) => s + c.total, 0);
       const otherCount = rest.reduce((s, c) => s + c.count, 0);
@@ -155,7 +190,6 @@ export default function InsightsPage() {
   let isDayOfMonth = false;
   if (rawDayPatterns) {
     if ("daily_pattern" in (rawDayPatterns as Record<string, unknown>)) {
-      // New format: {daily_pattern: [{day, transaction_count, total_amount}], ...}
       isDayOfMonth = true;
       const dp = (rawDayPatterns as { daily_pattern?: { day: number; transaction_count: number; total_amount: number; count?: number }[] }).daily_pattern;
       if (Array.isArray(dp)) {
@@ -164,7 +198,6 @@ export default function InsightsPage() {
           .sort((a, b) => Number(a.day) - Number(b.day));
       }
     } else {
-      // Legacy format: {Monday: 5, Tuesday: 3, ...}
       dayData = Object.entries(rawDayPatterns as Record<string, number>).map(([day, count]) => ({
         day: day.slice(0, 3),
         count: typeof count === "number" ? count : 0,
@@ -177,7 +210,6 @@ export default function InsightsPage() {
   let channelData: { name: string; fullName: string; count: number }[] = [];
   if (rawChannels) {
     if ("channels" in (rawChannels as Record<string, unknown>)) {
-      // New format: {channels: [{channel, count, total, percentage}], ...}
       const ch = (rawChannels as { channels?: { channel: string; count: number }[] }).channels || [];
       channelData = ch.map((c) => ({
         name: c.channel.length > 12 ? c.channel.slice(0, 12) + "…" : c.channel,
@@ -185,7 +217,6 @@ export default function InsightsPage() {
         count: c.count,
       }));
     } else {
-      // Legacy format: {channel_name: count}
       channelData = Object.entries(rawChannels as Record<string, number>).map(([name, count]) => ({
         name: name.length > 12 ? name.slice(0, 12) + "…" : name,
         fullName: name,
@@ -203,7 +234,6 @@ export default function InsightsPage() {
   if (Array.isArray(rawUnusual)) {
     unusualList = rawUnusual;
   } else if (rawUnusual && typeof rawUnusual === "object") {
-    // New format: {large_transactions: [...], round_number_transactions: [...], ...}
     const ut = rawUnusual as Record<string, unknown>;
     for (const key of ["large_transactions", "same_day_large_movements", "low_balance_events", "round_number_transactions"]) {
       const arr = ut[key];
@@ -231,7 +261,6 @@ export default function InsightsPage() {
       if (Array.isArray(health.indicators)) {
         healthFactors = health.indicators as { factor: string; impact: string; details: string }[];
       } else {
-        // indicators is a dict like {cash_runway_months: x, ...}
         healthFactors = Object.entries(health.indicators).map(([key, val]) => ({
           factor: key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
           impact: typeof val === "number" && val < 0 ? "negative" : typeof val === "number" && val > 0 ? "positive" : "neutral",
@@ -250,11 +279,11 @@ export default function InsightsPage() {
       <div className="border-b border-zinc-800/50 bg-gradient-to-b from-purple-500/[0.02] to-transparent">
         <div className="mx-auto max-w-6xl px-6 py-8">
           <Link
-            href={`/documents/${documentId}`}
+            href={`/groups/${groupId}`}
             className="mb-4 inline-flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
           >
             <ArrowLeft className="h-3 w-3" />
-            Back to Overview
+            Back to Group Overview
           </Link>
 
           <div className="flex items-center gap-3">
@@ -262,9 +291,15 @@ export default function InsightsPage() {
               <BarChart3 className="h-5 w-5 text-purple-400" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-white">Insights Agent</h1>
+              <h1 className="text-2xl font-bold text-white">Cross-Statement Insights</h1>
               <p className="text-sm text-zinc-500">
-                Cash flow analysis, spending categories, counterparties & business health
+                <Layers className="inline h-3 w-3 mr-1" />
+                Aggregated cash flow, spending patterns, business health & AI narrative
+                {totalStatements && totalTransactions && (
+                  <span className="ml-2 text-zinc-600">
+                    · {totalStatements} statements · {totalTransactions} transactions
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -311,7 +346,7 @@ export default function InsightsPage() {
           <div className="rounded-xl border border-zinc-800/50 bg-zinc-900/30 p-5">
             <div className="flex items-center gap-2 mb-4">
               <Heart className="h-4 w-4 text-purple-400" />
-              <h3 className="text-sm font-semibold text-zinc-300">Business Health</h3>
+              <h3 className="text-sm font-semibold text-zinc-300">Business Health (Cross-Statement)</h3>
             </div>
             <div className="flex items-center gap-6 mb-4">
               <div>
@@ -353,12 +388,50 @@ export default function InsightsPage() {
           </div>
         )}
 
+        {/* Per-Statement Summary Table */}
+        {perStatementSummary && perStatementSummary.length > 0 && (
+          <div className="rounded-xl border border-zinc-800/50 bg-zinc-900/30 overflow-hidden">
+            <div className="flex items-center gap-2 border-b border-zinc-800/50 px-5 py-4">
+              <Layers className="h-4 w-4 text-purple-400" />
+              <h3 className="text-sm font-semibold text-zinc-300">Per-Statement Summary</h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-zinc-800/50 text-left text-[10px] uppercase tracking-wider text-zinc-500">
+                    <th className="px-4 py-3">Period</th>
+                    <th className="px-4 py-3">Bank</th>
+                    <th className="px-4 py-3 text-right">Opening Balance</th>
+                    <th className="px-4 py-3 text-right">Closing Balance</th>
+                    <th className="px-4 py-3 text-right">Credits</th>
+                    <th className="px-4 py-3 text-right">Debits</th>
+                    <th className="px-4 py-3 text-right">Txns</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {perStatementSummary.map((ps, i) => (
+                    <tr key={i} className="border-b border-zinc-800/30 hover:bg-zinc-800/20 transition-colors">
+                      <td className="whitespace-nowrap px-4 py-2.5 text-zinc-300 font-medium">{ps.period || "—"}</td>
+                      <td className="px-4 py-2.5 text-zinc-400">{ps.bank || "—"}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 text-right font-mono text-zinc-300">{formatCurrency(ps.opening_balance)}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 text-right font-mono text-zinc-300">{formatCurrency(ps.closing_balance)}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 text-right font-mono text-emerald-400">{formatCurrency(ps.total_credits)}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 text-right font-mono text-red-400">{formatCurrency(ps.total_debits)}</td>
+                      <td className="px-4 py-2.5 text-right text-zinc-500">{ps.credit_count + ps.debit_count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         {/* Monthly Cash Flow Chart */}
         {monthlyFlows.length > 0 && (
           <div className="rounded-xl border border-zinc-800/50 bg-zinc-900/30 p-5">
             <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-zinc-300">
               <Wallet className="h-4 w-4 text-purple-400" />
-              Monthly Cash Flow
+              Monthly Cash Flow (All Statements)
             </h3>
             <div className="h-72">
               <ResponsiveContainer width="100%" height="100%">
@@ -386,10 +459,9 @@ export default function InsightsPage() {
             <div className="rounded-xl border border-zinc-800/50 bg-zinc-900/30 p-5">
               <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-zinc-300">
                 <BarChart3 className="h-4 w-4 text-purple-400" />
-                Top Categories
+                Top Categories (All Statements)
               </h3>
               <div className="flex items-center gap-4">
-                {/* Donut chart — no labels, clean look */}
                 <div className="h-52 w-52 flex-shrink-0">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
@@ -416,7 +488,6 @@ export default function InsightsPage() {
                     </PieChart>
                   </ResponsiveContainer>
                 </div>
-                {/* Legend table */}
                 <div className="flex-1 space-y-1.5 min-w-0">
                   {categoryData.map((cat, i) => {
                     const grandTotal = categoryData.reduce((s, c) => s + c.total, 0);
@@ -448,9 +519,7 @@ export default function InsightsPage() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#1e1e2e" />
                     <XAxis type="number" tick={{ fontSize: 10, fill: "#71717a" }} axisLine={{ stroke: "#27272a" }} />
                     <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: "#71717a" }} axisLine={{ stroke: "#27272a" }} width={55} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: "#111118", border: "1px solid #27272a", borderRadius: "8px", fontSize: 12 }}
-                    />
+                    <Tooltip contentStyle={{ backgroundColor: "#111118", border: "1px solid #27272a", borderRadius: "8px", fontSize: 12 }} />
                     <Bar dataKey="count" fill="#8b5cf6" radius={[0, 3, 3, 0]} fillOpacity={0.8} />
                   </BarChart>
                 </ResponsiveContainer>
@@ -459,7 +528,7 @@ export default function InsightsPage() {
           )}
         </div>
 
-        {/* Day of Week & Counterparties */}
+        {/* Day Patterns & Counterparties */}
         <div className="grid gap-4 lg:grid-cols-2">
           {/* Day Patterns */}
           {dayData.length > 0 && (
@@ -505,7 +574,7 @@ export default function InsightsPage() {
             <div className="rounded-xl border border-zinc-800/50 bg-zinc-900/30 p-5">
               <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-zinc-300">
                 <Users className="h-4 w-4 text-purple-400" />
-                Top Counterparties
+                Top Counterparties (All Statements)
               </h3>
               <div className="space-y-4">
                 {topCreditors.length > 0 && (
@@ -577,12 +646,12 @@ export default function InsightsPage() {
           </div>
         )}
 
-        {/* AI Narrative */}
+        {/* AI Narrative — Plain text */}
         {narrativeText && (
           <div className="rounded-xl border border-zinc-800/50 bg-zinc-900/30 p-5">
             <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-zinc-300">
               <MessageSquare className="h-4 w-4 text-purple-400" />
-              AI Analysis Narrative
+              AI Analysis Narrative (Cross-Statement)
             </h3>
             <div className="prose prose-invert prose-sm max-w-none">
               <p className="text-sm leading-relaxed text-zinc-400 whitespace-pre-line">{narrativeText}</p>
@@ -595,7 +664,7 @@ export default function InsightsPage() {
           <div className="rounded-xl border border-zinc-800/50 bg-zinc-900/30 p-5">
             <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-zinc-300">
               <MessageSquare className="h-4 w-4 text-purple-400" />
-              AI Analysis Narrative
+              AI Analysis Narrative (Cross-Statement)
             </h3>
             <div className="space-y-4">
               {narrativeSections.map((section, i) => (
@@ -607,6 +676,46 @@ export default function InsightsPage() {
                     {section.content}
                   </p>
                 </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Agent Summary */}
+        {agentResult?.summary && (
+          <div className="rounded-xl border border-zinc-800/50 bg-zinc-900/30 p-5">
+            <h3 className="mb-3 text-sm font-semibold text-zinc-300">Group Agent Summary</h3>
+            <p className="text-sm leading-relaxed text-zinc-400 whitespace-pre-line">{agentResult.summary}</p>
+          </div>
+        )}
+
+        {/* Per-Document Breakdown */}
+        {perDocInsights.length > 0 && (
+          <div>
+            <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-zinc-300">
+              <FileText className="h-4 w-4 text-purple-400" />
+              Per-Statement Insights ({perDocInsights.length} statements)
+            </h3>
+            <div className="space-y-2">
+              {perDocInsights.map((doc) => (
+                <Link
+                  key={doc.document_id}
+                  href={`/documents/${doc.document_id}/insights`}
+                  className="group flex items-center justify-between rounded-lg border border-zinc-800/50 bg-zinc-900/30 px-4 py-3 hover:border-zinc-700/50 hover:bg-zinc-900/60 transition-all"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <FileText className="h-4 w-4 text-purple-400 flex-shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-zinc-200 truncate">{doc.filename}</p>
+                      <p className="text-[10px] text-zinc-500">
+                        {doc.health_score != null ? `Health: ${doc.health_score}/100` : "No health score"}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <ChevronRight className="h-3.5 w-3.5 text-zinc-600 group-hover:text-zinc-400 transition-colors" />
+                  </div>
+                </Link>
               ))}
             </div>
           </div>

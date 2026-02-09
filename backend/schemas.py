@@ -125,6 +125,22 @@ class AgentResultResponse(BaseModel):
         from_attributes = True
 
 
+class GroupAgentResultResponse(BaseModel):
+    id: str
+    upload_group_id: str
+    agent_type: str
+    status: str
+    results: Optional[dict] = None
+    summary: Optional[str] = None
+    risk_level: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class CheckResult(BaseModel):
     check: str
     status: str  # pass, fail, warning
@@ -143,3 +159,4 @@ class GroupAnalysisResponse(BaseModel):
     upload_group_id: str
     documents: list[DocumentAnalysisResponse]
     aggregated_metrics: Optional[AggregatedMetricsResponse] = None
+    group_agents: Optional[dict[str, GroupAgentResultResponse]] = None

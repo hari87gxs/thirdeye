@@ -1,12 +1,12 @@
 # Third Eye — Project Status & Context Document
-> **Last Updated:** 2026-02-08  
+> **Last Updated:** 2026-02-09  
 > **Purpose:** Running doc to provide context for AI assistant continuity across sessions.
 
 ---
 
 ## 📋 Project Overview
 
-**Third Eye AI** is a multi-agent document intelligence platform for **bank statement analysis**. Users upload PDF bank statements, and 4 specialized AI agents analyze them.
+**Third Eye AI** is a multi-agent document intelligence platform for **bank statement analysis**. Users upload PDF bank statements (single or multiple), and 4 specialized AI agents analyze them — both per-document and cross-statement at group level.
 
 ### Tech Stack
 | Layer | Tech |
@@ -19,19 +19,18 @@
 ```
 ┌─────────────────────────────────────────────────────┐
 │  Frontend (Next.js :3000)                            │
-│  ├── / (Home) — Upload + Document List               │
-│  ├── /documents/[id] — Overview + Agent Cards         │
-│  ├── /documents/[id]/extraction — Transaction data    │
-│  ├── /documents/[id]/insights — Cash flow, categories │
-│  ├── /documents/[id]/tampering — PDF integrity checks │
-│  └── /documents/[id]/fraud — Anomaly & risk checks    │
+│  ├── / (Home) — Upload + Grouped Document List       │
+│  ├── /documents/[id] — Per-Doc Overview + Agent Cards │
+│  ├── /documents/[id]/{agent} — Per-doc agent detail   │
+│  ├── /groups/[groupId] — Group Overview + Agent Cards │
+│  └── /groups/[groupId]/{agent} — Cross-stmt detail    │
 └────────────────────┬────────────────────────────────┘
                      │ REST API (http://localhost:8000/api)
 ┌────────────────────┴────────────────────────────────┐
 │  Backend (FastAPI :8000)                             │
-│  ├── routers/documents.py — Upload, list, delete      │
-│  ├── routers/analysis.py — Trigger analysis, results  │
-│  ├── orchestrator.py — Runs 4 agents in sequence      │
+│  ├── routers/documents.py — Upload, list, delete, groups│
+│  ├── routers/analysis.py — Trigger analysis, results    │
+│  ├── orchestrator.py — Per-doc + group agent pipeline   │
 │  └── agents/                                          │
 │      ├── extraction.py — PDF → transactions + metrics  │
 │      ├── insights.py — Cash flow, categories, health   │
@@ -221,6 +220,28 @@
 | `frontend/src/app/documents/[id]/tampering/page.tsx` | Use `pass_count`/`fail_count`/`warning_count` with fallbacks |
 | `frontend/src/app/documents/[id]/fraud/page.tsx` | Use `pass_count`/`fail_count`/`warning_count` with fallbacks |
 | `frontend/src/app/documents/[id]/page.tsx` | Fix AgentCard score display for extraction accuracy + tampering/fraud counts |
+
+---
+
+## ✅ Features Added (2026-02-09)
+
+### 12. Multi-Statement Group Support
+- **Backend:** Orchestrator auto-triggers group-level agents after all per-doc agents complete. Group endpoints: `GET /api/groups/{groupId}/results`, `POST /api/analyze/group/{groupId}`.
+- **Frontend:** Documents grouped by upload batch on home page. Group overview page (`/groups/[groupId]`) with 4 clickable GroupAgentCards. 4 group-level detail pages: extraction summary, cross-statement insights, cross-statement fraud, cross-statement tampering.
+- **Types:** Added `GroupResults`, `GroupDocumentAgents`, `DocumentAgentGroup` interfaces.
+
+### 13. Enhanced Fraud Detection — Flagged Item Explanations
+- **Backend:** All 7 rule-based fraud checks (`check_round_amounts`, `check_duplicates`, `check_rapid_succession`, `check_large_outliers`, `check_balance_anomalies`, `check_cash_heavy`, `check_timing_patterns`) now include per-item `explanation` strings in `flagged_items` describing exactly why each transaction was flagged.
+- **Frontend:** `FraudCheckCard` (both per-doc and group pages) renders individual flagged items as expandable transaction cards showing date, description, amount, type badge, and explanation text.
+- **Types:** `CheckResult` now includes `flagged_items?: Array<Record<string, unknown>>`.
+
+### 14. Enhanced Insights — Unusual Transaction Explanations
+- **Backend:** All 4 unusual transaction categories now include `explanation` strings:
+  - Large debits/credits: multiplier context + what outliers may indicate
+  - Round-number transactions: structuring risk explanation
+  - Same-day large movements: layering/pass-through risk explanation
+  - Low balance events: cash flow stress explanation
+- **Frontend:** Unusual transaction cards (both per-doc and group insights pages) render `explanation` below each item with a subtle divider.
 
 ---
 

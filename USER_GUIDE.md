@@ -287,11 +287,11 @@ The top categories are displayed as a **donut chart with legend**, showing distr
 - **Recurring vendors** — entities appearing 3+ times
 
 #### Unusual Transaction Detection
-Automatically flags 4 types of unusual activity:
-- 🔴 **Large transactions** — amounts exceeding 3× the average
-- 🟡 **Round-number transactions** — exact thousands ≥$1,000 (potential fabrication)
-- 🟠 **Same-day large movements** — both large in and out on the same day
-- ⚠️ **Low balance events** — balance dropping below $10,000
+Automatically flags 4 types of unusual activity, each with a **detailed explanation** of why the transaction was flagged:
+- 🔴 **Large transactions** — amounts exceeding 3× the average, with context on the multiplier and what such outliers may indicate (bulk payments, capital expenditures, unauthorized withdrawals)
+- 🟡 **Round-number transactions** — exact thousands ≥$1,000 (potential structuring or manual transfers), with explanation of why round amounts warrant review
+- 🟠 **Same-day large movements** — both large in and out on the same day, with explanation of pass-through activity or layering risks
+- ⚠️ **Low balance events** — balance dropping below $10,000, with explanation of cash flow stress and overdraft implications
 
 #### Transaction Activity by Day of Month
 Bar chart showing transaction volume by day (1–31), revealing:
@@ -614,8 +614,11 @@ The Fraud Agent analyzes the **extracted transaction data** for patterns commonl
 
 - **Risk score** and colored badge (Low / Medium / High / Critical)
 - **Pass/Fail/Warning counts** at a glance
-- **Flagged transactions** — specific transactions that triggered alerts, with the check that flagged them
 - **Individual check results** with status icon and detailed findings
+- **Flagged items per check** — each check expands to show the specific transactions that triggered it, including:
+  - Transaction date, description, and amount
+  - Transaction type badge (credit/debit)
+  - **Explanation** — a plain-language description of why this specific transaction was flagged (e.g., "This outgoing payment of 8,500.00 is 4.2x the average debit of 2,023.81")
 
 ### Risk Level Calculation
 
@@ -656,6 +659,10 @@ Each **Agent Card** displays:
 ### Upload Groups
 - Multiple PDFs uploaded at the same time are grouped together
 - Aggregated metrics are computed across all statements in the group
+- Group-level agents run automatically after all per-document agents complete
+- **Group overview page** shows cross-statement agent cards with aggregated scores
+- **Cross-statement detail pages** for each agent (extraction summary, aggregated insights, combined fraud/tampering detection)
+- Drill down from any group-level view to individual statement results
 
 ---
 

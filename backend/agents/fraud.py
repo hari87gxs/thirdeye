@@ -84,6 +84,10 @@ def check_round_amounts(txns: List[RawTransaction]) -> dict:
                 "amount": amt,
                 "type": t.transaction_type,
                 "description": (t.description or "")[:80],
+                "explanation": f"This {t.transaction_type or 'transaction'} of {amt:,.2f} is a round number "
+                               f"(÷ {ROUND_MODULO:,} = {int(amt // ROUND_MODULO)}). Large round-amount "
+                               f"transactions can indicate structuring — deliberately splitting or "
+                               f"rounding payments to avoid reporting thresholds.",
             })
 
     if not flagged:
@@ -109,12 +113,18 @@ def check_duplicates(txns: List[RawTransaction]) -> dict:
     dupes = []
     for key, group in seen.items():
         if len(group) >= 2:
+            t0 = group[0]
+            cp = t0.counterparty or "unknown counterparty"
             dupes.append({
                 "count": len(group),
-                "date": group[0].date,
-                "amount": group[0].amount,
-                "counterparty": group[0].counterparty or "",
-                "description": (group[0].description or "")[:80],
+                "date": t0.date,
+                "amount": t0.amount,
+                "counterparty": t0.counterparty or "",
+                "description": (t0.description or "")[:80],
+                "explanation": f"{len(group)} identical transactions of {(t0.amount or 0):,.2f} to/from "
+                               f"'{cp}' on {t0.date}. Duplicate transactions with the same amount, "
+                               f"date and counterparty may indicate processing errors, double-billing, "
+                               f"or intentional payment splitting.",
             })
 
     if not dupes:
@@ -133,10 +143,12 @@ def check_rapid_succession(txns: List[RawTransaction]) -> dict:
     """Check 3: Flag days with unusually high transaction counts."""
     name = "Rapid Succession Transactions"
     by_day: dict[str, int] = Counter()
+    day_amounts: dict[str, float] = defaultdict(float)
     for t in txns:
         dk = _date_key(t.date)
         if dk:
             by_day[dk] += 1
+            day_amounts[dk] += t.amount or 0
 
     busy_days = [(day, cnt) for day, cnt in by_day.items() if cnt >= RAPID_TXN_THRESHOLD]
     busy_days.sort(key=lambda x: x[1], reverse=True)
@@ -146,7 +158,14 @@ def check_rapid_succession(txns: List[RawTransaction]) -> dict:
                 "details": f"No days with ≥ {RAPID_TXN_THRESHOLD} transactions.",
                 "flagged_items": []}
 
-    items = [{"date": d, "count": c} for d, c in busy_days[:10]]
+    items = [{
+        "date": d,
+        "count": c,
+        "total_amount": round(day_amounts[d], 2),
+        "explanation": f"{c} transactions totalling {day_amounts[d]:,.2f} were processed on {d}. "
+                       f"An unusually high number of transactions in a single day can indicate "
+                       f"batch processing, account churning, or an attempt to move funds rapidly.",
+    } for d, c in busy_days[:10]]
     return {"check": name, "status": "warning",
             "details": f"{len(busy_days)} days with ≥ {RAPID_TXN_THRESHOLD} "
                        f"transactions (max {busy_days[0][1]} on {busy_days[0][0]}).",
@@ -170,12 +189,17 @@ def check_large_outliers(txns: List[RawTransaction]) -> dict:
     flagged = []
     for t in txns:
         if (t.amount or 0) > threshold:
+            std_devs_away = round((t.amount - mean) / stdev, 1) if stdev > 0 else 0
             flagged.append({
                 "date": t.date,
                 "amount": t.amount,
                 "type": t.transaction_type,
                 "description": (t.description or "")[:80],
-                "std_devs": round((t.amount - mean) / stdev, 1) if stdev > 0 else 0,
+                "std_devs": std_devs_away,
+                "explanation": f"This {t.transaction_type or 'transaction'} of {t.amount:,.2f} is "
+                               f"{std_devs_away}σ above the mean ({mean:,.2f}). "
+                               f"Amounts exceeding {OUTLIER_STD_DEVS}σ are statistically rare outliers "
+                               f"that may warrant investigation for unusual activity.",
             })
 
     flagged.sort(key=lambda x: x["amount"], reverse=True)
@@ -213,12 +237,17 @@ def check_balance_anomalies(txns: List[RawTransaction]) -> dict:
         curr_bal = balances[i][1]
         swing = abs(curr_bal - prev_bal)
         if swing > BALANCE_SWING_RATIO * max_bal and swing > 10_000:
+            direction = "increased" if curr_bal > prev_bal else "decreased"
             flagged.append({
                 "date": balances[i][0],
                 "previous_balance": round(prev_bal, 2),
                 "new_balance": round(curr_bal, 2),
                 "swing": round(swing, 2),
                 "swing_pct": round(swing / max_bal * 100, 1),
+                "explanation": f"Balance {direction} by {swing:,.2f} ({swing / max_bal * 100:.1f}% of peak) "
+                               f"from {prev_bal:,.2f} to {curr_bal:,.2f} on {balances[i][0]}. "
+                               f"Sudden large balance swings can indicate large one-off transfers, "
+                               f"fraud, or account manipulation.",
             })
 
     if not flagged:
@@ -274,7 +303,12 @@ def check_cash_heavy(txns: List[RawTransaction], metrics: Optional[StatementMetr
             "flagged_items": [{"cash_ratio": round(ratio, 3),
                                "cash_deposits": cash_deposits,
                                "cash_withdrawals": cash_withdrawals,
-                               "cash_count": cash_count}]}
+                               "cash_count": cash_count,
+                               "explanation": f"Cash represents {ratio*100:.1f}% of total transaction volume "
+                                              f"({cash_total:,.2f} out of {total_volume:,.2f}). "
+                                              f"A cash ratio above {CASH_RATIO_THRESHOLD*100:.0f}% is unusual "
+                                              f"for most businesses and can indicate unreported income, "
+                                              f"money laundering, or tax evasion."}]}
 
 
 def check_timing_patterns(txns: List[RawTransaction]) -> dict:
@@ -310,7 +344,11 @@ def check_timing_patterns(txns: List[RawTransaction]) -> dict:
             "details": f"{edge_count}/{total} ({edge_ratio*100:.0f}%) transactions "
                        f"concentrated at month start/end (days {sorted(MONTH_EDGE_DAYS)}).",
             "flagged_items": [{"edge_count": edge_count, "mid_count": mid_count,
-                               "edge_ratio": round(edge_ratio, 3)}]}
+                               "edge_ratio": round(edge_ratio, 3),
+                               "explanation": f"{edge_ratio*100:.0f}% of transactions occur in the first/last "
+                                              f"3 days of the month (expected ~23%). This concentration "
+                                              f"may suggest salary-driven spending, month-end window-dressing, "
+                                              f"or deliberate timing to manage reporting periods."}]}
 
 
 def check_counterparty_risk(txns: List[RawTransaction]) -> dict:
@@ -490,4 +528,132 @@ class FraudAgent(BaseAgent):
             },
             "summary": summary,
             "risk_level": risk_level,
+        }
+
+    def run_group(self, upload_group_id: str, db: Session) -> dict:
+        """Run fraud analysis across ALL statements in an upload group.
+
+        Aggregates transactions from all documents and runs the same fraud
+        checks on the combined dataset.  This catches cross-statement patterns
+        like structuring across months, recurring suspicious counterparties, etc.
+        """
+        logger.info(f"🕵️  Group fraud agent starting for group {upload_group_id}")
+
+        # ── Fetch ALL transactions across the group ──
+        txns = (
+            db.query(RawTransaction)
+            .filter(RawTransaction.upload_group_id == upload_group_id)
+            .all()
+        )
+        all_metrics = (
+            db.query(StatementMetrics)
+            .filter(StatementMetrics.upload_group_id == upload_group_id)
+            .all()
+        )
+
+        if not txns:
+            logger.warning("  No transactions found across group — skipping fraud checks")
+            return {
+                "results": {"checks": [], "total_checks": 0},
+                "summary": "No transactions available for group fraud analysis.",
+                "risk_level": "low",
+            }
+
+        total_docs = len(all_metrics)
+        logger.info(
+            f"  📊 Analysing {len(txns)} transactions across {total_docs} statements "
+            f"for fraud signals..."
+        )
+
+        # ── Run all checks on combined transactions ──
+        checks: list[dict] = []
+
+        # Create a combined metrics-like object for checks that need it
+        combined_metrics = all_metrics[0] if all_metrics else None
+
+        logger.info("  🔢 Running rule-based fraud checks (cross-statement)...")
+        checks.append(check_round_amounts(txns))
+        checks.append(check_duplicates(txns))
+        checks.append(check_rapid_succession(txns))
+        checks.append(check_large_outliers(txns))
+        checks.append(check_balance_anomalies(txns))
+        checks.append(check_cash_heavy(txns, combined_metrics))
+        checks.append(check_timing_patterns(txns))
+
+        # Cross-statement specific check: balance continuity between statements
+        if len(all_metrics) >= 2:
+            checks.append(self._check_cross_statement_balance(all_metrics))
+
+        # LLM counterparty check on combined data
+        logger.info("  🤖 Running counterparty risk assessment (LLM)...")
+        checks.append(check_counterparty_risk(txns))
+
+        # ── Compute risk ──
+        risk_level, risk_score, summary = _compute_risk(checks)
+
+        logger.info(
+            f"  🕵️  Group fraud result: {risk_level} (score={risk_score}) — {summary}"
+        )
+
+        return {
+            "results": {
+                "checks": checks,
+                "risk_score": risk_score,
+                "pass_count": sum(1 for c in checks if c["status"] == "pass"),
+                "fail_count": sum(1 for c in checks if c["status"] == "fail"),
+                "warning_count": sum(1 for c in checks if c["status"] == "warning"),
+                "total_checks": len(checks),
+                "statements_analyzed": total_docs,
+                "total_transactions": len(txns),
+            },
+            "summary": f"[{total_docs} statements] {summary}",
+            "risk_level": risk_level,
+        }
+
+    def _check_cross_statement_balance(self, all_metrics: list) -> dict:
+        """Check that closing balance of statement N ≈ opening balance of statement N+1."""
+        name = "Cross-Statement Balance Continuity"
+        gaps = []
+
+        # Sort by statement period
+        sorted_metrics = sorted(
+            all_metrics,
+            key=lambda m: m.statement_period or "",
+        )
+
+        for i in range(1, len(sorted_metrics)):
+            prev = sorted_metrics[i - 1]
+            curr = sorted_metrics[i]
+            prev_closing = prev.closing_balance
+            curr_opening = curr.opening_balance
+
+            if prev_closing is None or curr_opening is None:
+                continue
+
+            diff = abs(prev_closing - curr_opening)
+            if diff > 0.02:  # more than 2 cent tolerance
+                gaps.append({
+                    "from_period": prev.statement_period,
+                    "to_period": curr.statement_period,
+                    "prev_closing": round(prev_closing, 2),
+                    "curr_opening": round(curr_opening, 2),
+                    "difference": round(diff, 2),
+                })
+
+        if not gaps:
+            return {
+                "check": name,
+                "status": "pass",
+                "details": f"Balance continuity verified across {len(sorted_metrics)} statements.",
+                "flagged_items": [],
+            }
+
+        return {
+            "check": name,
+            "status": "fail" if len(gaps) >= 2 else "warning",
+            "details": (
+                f"{len(gaps)} balance gap(s) between consecutive statements. "
+                f"This may indicate missing statements or tampering."
+            ),
+            "flagged_items": gaps,
         }

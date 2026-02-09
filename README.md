@@ -20,14 +20,22 @@
 
 ## What is ThirdEye?
 
-ThirdEye AI is an **intelligent multi-agent platform** that analyzes bank statement PDFs using four specialized AI agents:
+ThirdEye AI is an **intelligent multi-agent platform** that analyzes bank statement PDFs using four specialized AI agents. Upload **multiple statements** at once for cross-statement analysis with group-level insights.
 
 | Agent | Purpose | Key Capability |
 |-------|---------|----------------|
 | 🔵 **Extraction** | Extracts transactions, balances, account info | Zero-LLM table/word-position parsing for 18+ bank formats |
-| 🟣 **Insights** | Cash flow, spending patterns, business health | Composite health score (0–100) with 7 indicators |
+| 🟣 **Insights** | Cash flow, spending patterns, business health | Composite health score (0–100) with 7 indicators + per-transaction explanations |
 | 🟡 **Tampering** | PDF integrity & manipulation detection | 8 checks including CV2 sharpness analysis + GPT-4o Vision |
-| 🔴 **Fraud** | Anomaly detection & risk assessment | Statistical outlier detection + LLM counterparty risk analysis |
+| 🔴 **Fraud** | Anomaly detection & risk assessment | Statistical outlier detection + LLM counterparty risk + flagged item explanations |
+
+### Multi-Statement Support
+
+Upload multiple bank statements together to get **cross-statement analysis**:
+- Group overview page with aggregated metrics across all statements
+- Cross-statement fraud detection (patterns spanning multiple statements)
+- Aggregated insights with combined cash flow, categories, and health scoring
+- Per-statement drill-down from any group-level view
 
 ### Supported Banks (Singapore Focus)
 
@@ -250,20 +258,26 @@ third-eye/
     └── src/
         ├── app/
         │   ├── layout.tsx       # Root layout + Navbar
-        │   ├── page.tsx         # Home: upload & document list
-        │   └── documents/[id]/  # Document detail pages
-        │       ├── page.tsx     # Overview + 4 agent cards
-        │       ├── extraction/  # Extraction results
-        │       ├── insights/    # Insights results
-        │       ├── tampering/   # Tampering results
-        │       └── fraud/       # Fraud results
+        │   ├── page.tsx         # Home: upload & grouped document list
+        │   ├── documents/[id]/  # Per-document detail pages
+        │   │   ├── page.tsx     # Overview + 4 agent cards
+        │   │   ├── extraction/  # Extraction results
+        │   │   ├── insights/    # Insights (with unusual txn explanations)
+        │   │   ├── tampering/   # Tampering results
+        │   │   └── fraud/       # Fraud (with flagged item explanations)
+        │   └── groups/[groupId]/ # Cross-statement group pages
+        │       ├── page.tsx     # Group overview + agent cards
+        │       ├── extraction/  # Cross-statement extraction summary
+        │       ├── insights/    # Aggregated insights
+        │       ├── tampering/   # Cross-statement tampering
+        │       └── fraud/       # Cross-statement fraud detection
         ├── components/
         │   ├── layout/Navbar.tsx
         │   ├── upload/FileUploadZone.tsx
-        │   └── documents/DocumentList.tsx
+        │   └── documents/DocumentList.tsx  # Grouped by upload batch
         └── lib/
-            ├── api.ts           # Backend API client
-            ├── types.ts         # TypeScript interfaces
+            ├── api.ts           # Backend API client (incl. group endpoints)
+            ├── types.ts         # TypeScript interfaces (incl. group types)
             └── utils.ts         # Formatting helpers
 ```
 
