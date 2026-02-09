@@ -4,9 +4,10 @@ import logging
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
-from models import Document, DocumentStatus
+from models import Document, DocumentStatus, User
 from schemas import DocumentResponse, UploadResponse
 from config import settings
+from routers.auth import get_current_user_dep
 import fitz  # PyMuPDF
 
 logger = logging.getLogger("ThirdEye.Documents")
@@ -18,6 +19,7 @@ router = APIRouter()
 async def upload_documents(
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
 ):
     """Upload one or more PDF bank statements for analysis."""
     upload_group_id = str(uuid.uuid4())
@@ -56,6 +58,7 @@ async def upload_documents(
         # Create DB record
         db_doc = Document(
             id=file_id,
+            user_id=current_user.id,
             filename=safe_filename,
             original_filename=file.filename,
             file_path=file_path,
@@ -81,25 +84,41 @@ async def upload_documents(
 
 
 @router.get("/documents", response_model=list[DocumentResponse])
-def list_documents(db: Session = Depends(get_db)):
-    """List all uploaded documents."""
-    docs = db.query(Document).order_by(Document.created_at.desc()).all()
+def list_documents(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
+):
+    """List all uploaded documents for the current user."""
+    docs = (
+        db.query(Document)
+        .filter(Document.user_id == current_user.id)
+        .order_by(Document.created_at.desc())
+        .all()
+    )
     return [DocumentResponse.model_validate(d) for d in docs]
 
 
 @router.get("/documents/{document_id}", response_model=DocumentResponse)
-def get_document(document_id: str, db: Session = Depends(get_db)):
-    """Get a specific document."""
-    doc = db.query(Document).filter(Document.id == document_id).first()
+def get_document(
+    document_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
+):
+    """Get a specific document (must belong to current user)."""
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return DocumentResponse.model_validate(doc)
 
 
 @router.delete("/documents/{document_id}")
-def delete_document(document_id: str, db: Session = Depends(get_db)):
+def delete_document(
+    document_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
+):
     """Delete a document and its associated data."""
-    doc = db.query(Document).filter(Document.id == document_id).first()
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -113,9 +132,17 @@ def delete_document(document_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/groups")
-def list_upload_groups(db: Session = Depends(get_db)):
-    """List all upload groups with their documents."""
-    docs = db.query(Document).order_by(Document.created_at.desc()).all()
+def list_upload_groups(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
+):
+    """List all upload groups with their documents for the current user."""
+    docs = (
+        db.query(Document)
+        .filter(Document.user_id == current_user.id)
+        .order_by(Document.created_at.desc())
+        .all()
+    )
     groups = {}
     for doc in docs:
         gid = doc.upload_group_id

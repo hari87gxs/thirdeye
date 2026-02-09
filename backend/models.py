@@ -51,11 +51,25 @@ def utcnow():
 
 # ─── Models ───────────────────────────────────────────────────────────────────
 
+class User(Base):
+    """Application user."""
+    __tablename__ = "users"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False, unique=True, index=True)
+    password_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, default=utcnow)
+
+    documents = relationship("Document", back_populates="owner", cascade="all, delete-orphan")
+
+
 class Document(Base):
     """Uploaded PDF document metadata."""
     __tablename__ = "documents"
 
     id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
     filename = Column(String, nullable=False)
     original_filename = Column(String, nullable=False)
     file_path = Column(String, nullable=False)
@@ -67,6 +81,7 @@ class Document(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
     # Relationships
+    owner = relationship("User", back_populates="documents")
     raw_transactions = relationship("RawTransaction", back_populates="document", cascade="all, delete-orphan")
     statement_metrics = relationship("StatementMetrics", back_populates="document", cascade="all, delete-orphan", uselist=False)
     agent_results = relationship("AgentResult", back_populates="document", cascade="all, delete-orphan")

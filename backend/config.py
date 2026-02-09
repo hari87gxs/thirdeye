@@ -9,8 +9,12 @@ class Settings:
     VERSION: str = "1.0.0"
     API_PREFIX: str = "/api"
 
-    # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./third_eye.db")
+    # Database — use absolute path so CWD doesn't affect DB location
+    _DB_DIR: str = os.path.dirname(os.path.abspath(__file__))
+    DATABASE_URL: str = os.getenv(
+        "DATABASE_URL",
+        f"sqlite:///{os.path.join(_DB_DIR, 'third_eye.db')}",
+    )
 
     # Azure OpenAI
     AZURE_OPENAI_API_KEY: str = os.getenv("AZURE_OPENAI_API_KEY", "")
@@ -22,6 +26,10 @@ class Settings:
     # File upload
     UPLOAD_DIR: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
     MAX_FILE_SIZE_MB: int = 50
+
+    # JWT Authentication
+    JWT_SECRET: str = os.getenv("JWT_SECRET", "thirdeye-dev-secret-change-in-production")
+    JWT_EXPIRY_HOURS: int = int(os.getenv("JWT_EXPIRY_HOURS", "72"))
 
     # PDF Processing
     PDF_TO_IMAGE_DPI: int = 200
@@ -46,7 +54,7 @@ class Settings:
         x.strip()
         for x in os.getenv(
             "ALLOWED_ORIGINS",
-            "http://localhost:3000,http://127.0.0.1:3000"
+            "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001"
         ).split(",")
     ]
 

@@ -12,15 +12,31 @@ import {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
 
+function getAuthHeaders(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  const token = localStorage.getItem("thirdeye_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...getAuthHeaders(),
       ...options?.headers,
     },
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      // Token expired or invalid — clear session and redirect to login
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("thirdeye_token");
+        localStorage.removeItem("thirdeye_user");
+        window.location.href = "/login";
+      }
+      throw new Error("Session expired. Please log in again.");
+    }
     const error = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(error.detail || `API error: ${res.status}`);
   }
@@ -35,6 +51,7 @@ export async function uploadDocuments(files: File[]): Promise<UploadResponse> {
 
   const res = await fetch(`${API_BASE}/upload`, {
     method: "POST",
+    headers: getAuthHeaders(),
     body: formData,
   });
   if (!res.ok) {

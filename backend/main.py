@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from database import init_db
-from routers import documents, analysis
+from routers import documents, analysis, auth
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -30,6 +30,7 @@ app.add_middleware(
 
 # ─── Routers ──────────────────────────────────────────────────────────────────
 
+app.include_router(auth.router, prefix=f"{settings.API_PREFIX}/auth", tags=["Authentication"])
 app.include_router(documents.router, prefix=settings.API_PREFIX, tags=["Documents"])
 app.include_router(analysis.router, prefix=settings.API_PREFIX, tags=["Analysis"])
 

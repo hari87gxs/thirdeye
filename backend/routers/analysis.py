@@ -2,9 +2,10 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy.orm import Session
 from database import get_db
-from models import Document, AgentResult, GroupAgentResult, AgentType, AgentStatus, DocumentStatus, RawTransaction, StatementMetrics, AggregatedMetrics
+from models import Document, AgentResult, GroupAgentResult, AgentType, AgentStatus, DocumentStatus, RawTransaction, StatementMetrics, AggregatedMetrics, User
 from schemas import AgentResultResponse, GroupAgentResultResponse, DocumentAnalysisResponse, DocumentResponse, TransactionResponse, StatementMetricsResponse, AggregatedMetricsResponse
 from orchestrator import run_all_agents
+from routers.auth import get_current_user_dep
 
 logger = logging.getLogger("ThirdEye.Analysis")
 
@@ -16,9 +17,10 @@ async def analyze_document(
     document_id: str,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
 ):
     """Trigger all 4 agents for a specific document."""
-    doc = db.query(Document).filter(Document.id == document_id).first()
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -57,9 +59,10 @@ async def analyze_group(
     upload_group_id: str,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
 ):
     """Trigger analysis for all documents in an upload group."""
-    docs = db.query(Document).filter(Document.upload_group_id == upload_group_id).all()
+    docs = db.query(Document).filter(Document.upload_group_id == upload_group_id, Document.user_id == current_user.id).all()
     if not docs:
         raise HTTPException(status_code=404, detail="No documents found for this upload group")
 
@@ -92,9 +95,13 @@ async def analyze_group(
 
 
 @router.get("/results/group/{upload_group_id}")
-def get_group_results(upload_group_id: str, db: Session = Depends(get_db)):
+def get_group_results(
+    upload_group_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
+):
     """Get results for all documents in an upload group, including group-level agent results."""
-    docs = db.query(Document).filter(Document.upload_group_id == upload_group_id).all()
+    docs = db.query(Document).filter(Document.upload_group_id == upload_group_id, Document.user_id == current_user.id).all()
     if not docs:
         raise HTTPException(status_code=404, detail="No documents found for this upload group")
 
@@ -130,9 +137,13 @@ def get_group_results(upload_group_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/results/{document_id}")
-def get_results(document_id: str, db: Session = Depends(get_db)):
+def get_results(
+    document_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
+):
     """Get all agent results for a document."""
-    doc = db.query(Document).filter(Document.id == document_id).first()
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -147,8 +158,18 @@ def get_results(document_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/results/{document_id}/{agent_type}")
-def get_agent_result(document_id: str, agent_type: str, db: Session = Depends(get_db)):
+def get_agent_result(
+    document_id: str,
+    agent_type: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
+):
     """Get a specific agent's result for a document."""
+    # Verify ownership
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
     result = (
         db.query(AgentResult)
         .filter(AgentResult.document_id == document_id, AgentResult.agent_type == agent_type)
@@ -161,9 +182,13 @@ def get_agent_result(document_id: str, agent_type: str, db: Session = Depends(ge
 
 
 @router.get("/status/group/{upload_group_id}")
-def get_group_status(upload_group_id: str, db: Session = Depends(get_db)):
+def get_group_status(
+    upload_group_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
+):
     """Get processing status for an upload group — used by frontend polling."""
-    docs = db.query(Document).filter(Document.upload_group_id == upload_group_id).all()
+    docs = db.query(Document).filter(Document.upload_group_id == upload_group_id, Document.user_id == current_user.id).all()
     if not docs:
         raise HTTPException(status_code=404, detail="No documents found for this upload group")
 
@@ -225,8 +250,14 @@ def get_transactions(
     transaction_type: str = Query(None, description="Filter by: credit, debit"),
     category: str = Query(None, description="Filter by category"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
 ):
     """Get extracted transactions for a document."""
+    # Verify ownership
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
     query = db.query(RawTransaction).filter(RawTransaction.document_id == document_id)
     if transaction_type:
         query = query.filter(RawTransaction.transaction_type == transaction_type)
@@ -245,8 +276,17 @@ def get_transactions(
 
 
 @router.get("/metrics/{document_id}")
-def get_metrics(document_id: str, db: Session = Depends(get_db)):
+def get_metrics(
+    document_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
+):
     """Get computed metrics for a document."""
+    # Verify ownership
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == current_user.id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
     metrics = db.query(StatementMetrics).filter(StatementMetrics.document_id == document_id).first()
     if not metrics:
         raise HTTPException(status_code=404, detail="Metrics not found — run extraction first")
@@ -254,8 +294,17 @@ def get_metrics(document_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/metrics/group/{upload_group_id}")
-def get_group_metrics(upload_group_id: str, db: Session = Depends(get_db)):
+def get_group_metrics(
+    upload_group_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_dep),
+):
     """Get aggregated metrics for an upload group."""
+    # Verify ownership: at least one doc in this group belongs to the user
+    doc = db.query(Document).filter(Document.upload_group_id == upload_group_id, Document.user_id == current_user.id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Group not found")
+
     agg = db.query(AggregatedMetrics).filter(AggregatedMetrics.upload_group_id == upload_group_id).first()
     per_statement = (
         db.query(StatementMetrics)
