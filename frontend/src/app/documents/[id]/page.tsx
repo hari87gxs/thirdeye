@@ -38,6 +38,14 @@ const AGENT_CONFIG: Record<
   string,
   { icon: typeof FileText; label: string; color: string; bgColor: string; href: string; description: string }
 > = {
+  layout: {
+    icon: FileText,
+    label: "Layout Agent",
+    color: "text-cyan-400",
+    bgColor: "bg-cyan-500/10 border-cyan-500/20",
+    href: "layout",
+    description: "PDF structure analysis, bank detection & table mapping",
+  },
   extraction: {
     icon: FileText,
     label: "Extraction Agent",
@@ -298,7 +306,7 @@ export default function DocumentOverviewPage() {
       <div className="mx-auto max-w-6xl px-6 py-8">
         <h2 className="mb-4 text-lg font-semibold text-white">AI Agent Results</h2>
         <div className="grid gap-4 sm:grid-cols-2">
-          {["extraction", "insights", "tampering", "fraud"].map((agentType) => (
+          {["layout", "extraction", "insights", "tampering", "fraud"].map((agentType) => (
             <AgentCard
               key={agentType}
               agentType={agentType}

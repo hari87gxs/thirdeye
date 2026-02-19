@@ -9,11 +9,10 @@ class Settings:
     VERSION: str = "1.0.0"
     API_PREFIX: str = "/api"
 
-    # Database — use absolute path so CWD doesn't affect DB location
-    _DB_DIR: str = os.path.dirname(os.path.abspath(__file__))
+    # Database — use /app/data for persistence with Docker volumes
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL",
-        f"sqlite:///{os.path.join(_DB_DIR, 'third_eye.db')}",
+        "sqlite:////app/data/third_eye.db",
     )
 
     # Azure OpenAI
@@ -54,7 +53,7 @@ class Settings:
         x.strip()
         for x in os.getenv(
             "ALLOWED_ORIGINS",
-            "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001"
+            "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://thirdeye-ec2-alb-1720575765.ap-southeast-1.elb.amazonaws.com"
         ).split(",")
     ]
 

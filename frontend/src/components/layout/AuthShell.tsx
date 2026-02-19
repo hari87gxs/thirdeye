@@ -22,12 +22,17 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!isLoading && !user && !isLoginPage) {
-      router.replace("/login");
+      router.push("/login");
     }
     if (!isLoading && user && isLoginPage) {
-      router.replace("/");
+      router.push("/");
     }
-  }, [isLoading, user, isLoginPage, router]);
+  }, [isLoading, user, isLoginPage, router, pathname]);
+
+  // Login page — no Navbar, full-screen (render immediately to avoid hydration issues)
+  if (isLoginPage) {
+    return <>{children}</>;
+  }
 
   // While hydrating
   if (isLoading) {
@@ -36,11 +41,6 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
         <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
       </div>
     );
-  }
-
-  // Login page — no Navbar, full-screen
-  if (isLoginPage) {
-    return <>{children}</>;
   }
 
   // Not logged in but not on login page — will redirect (show spinner meanwhile)

@@ -1,4 +1,5 @@
 import logging
+import math
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy.orm import Session
 from database import get_db
@@ -10,6 +11,26 @@ from routers.auth import get_current_user_dep
 logger = logging.getLogger("ThirdEye.Analysis")
 
 router = APIRouter()
+
+
+def _sanitize_value(value):
+    """Sanitize values to prevent JSON serialization errors with NaN/Inf."""
+    if value is None:
+        return None
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+    return value
+
+
+def _sanitize_response(data):
+    """Recursively sanitize all values in response data."""
+    if isinstance(data, dict):
+        return {k: _sanitize_response(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [_sanitize_response(item) for item in data]
+    else:
+        return _sanitize_value(data)
 
 
 @router.post("/analyze/{document_id}")
@@ -125,7 +146,7 @@ def get_group_results(
     # Aggregated metrics
     agg = db.query(AggregatedMetrics).filter(AggregatedMetrics.upload_group_id == upload_group_id).first()
 
-    return {
+    response_data = {
         "upload_group_id": upload_group_id,
         "documents": per_doc_results,
         "group_agents": {
@@ -134,6 +155,9 @@ def get_group_results(
         } if group_agent_results else {},
         "aggregated_metrics": AggregatedMetricsResponse.model_validate(agg).model_dump() if agg else None,
     }
+    
+    # Sanitize response to prevent NaN/Inf JSON errors
+    return _sanitize_response(response_data)
 
 
 @router.get("/results/{document_id}")
@@ -149,12 +173,13 @@ def get_results(
 
     results = db.query(AgentResult).filter(AgentResult.document_id == document_id).all()
 
-    return {
+    response_data = {
         "document": DocumentResponse.model_validate(doc).model_dump(),
         "agents": {
             r.agent_type: AgentResultResponse.model_validate(r).model_dump() for r in results
         },
     }
+    return _sanitize_response(response_data)
 
 
 @router.get("/results/{document_id}/{agent_type}")
@@ -290,7 +315,7 @@ def get_metrics(
     metrics = db.query(StatementMetrics).filter(StatementMetrics.document_id == document_id).first()
     if not metrics:
         raise HTTPException(status_code=404, detail="Metrics not found — run extraction first")
-    return StatementMetricsResponse.model_validate(metrics).model_dump()
+    return _sanitize_response(StatementMetricsResponse.model_validate(metrics).model_dump())
 
 
 @router.get("/metrics/group/{upload_group_id}")
@@ -311,7 +336,8 @@ def get_group_metrics(
         .filter(StatementMetrics.upload_group_id == upload_group_id)
         .all()
     )
-    return {
+    response_data = {
         "aggregated": AggregatedMetricsResponse.model_validate(agg).model_dump() if agg else None,
         "per_statement": [StatementMetricsResponse.model_validate(m).model_dump() for m in per_statement],
     }
+    return _sanitize_response(response_data)

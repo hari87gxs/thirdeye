@@ -21,13 +21,111 @@ def run_all_agents(document_id: str):
         logger.info(f"🔮 Starting analysis for document: {doc.original_filename}")
 
         # Import agents
+        from agents.layout import LayoutAgent
         from agents.extraction import ExtractionAgent
         from agents.insights import InsightsAgent
         from agents.tampering import TamperingAgent
         from agents.fraud import FraudAgent
 
+        # Step 1: Layout Agent (NEW - runs first to provide context)
+        layout_context = None
+        layout_agent = LayoutAgent()
+        layout_result_record = (
+            db.query(AgentResult)
+            .filter(
+                AgentResult.document_id == document_id,
+                AgentResult.agent_type == AgentType.LAYOUT.value,
+            )
+            .first()
+        )
+
+        if not layout_result_record:
+            layout_result_record = AgentResult(
+                document_id=document_id,
+                upload_group_id=doc.upload_group_id,
+                agent_type=AgentType.LAYOUT.value,
+            )
+            db.add(layout_result_record)
+            db.flush()
+
+        if layout_result_record.status != AgentStatus.COMPLETED.value:
+            layout_result_record.status = AgentStatus.RUNNING.value
+            layout_result_record.started_at = datetime.now(timezone.utc)
+            db.commit()
+
+            try:
+                logger.info(f"  🤖 Running layout agent...")
+                result = layout_agent.run(document_id, db)
+
+                layout_result_record.status = AgentStatus.COMPLETED.value
+                layout_result_record.results = result.get("results", {})
+                layout_result_record.summary = result.get("summary", "")
+                layout_result_record.risk_level = result.get("risk_level", "low")
+                layout_result_record.completed_at = datetime.now(timezone.utc)
+                db.commit()
+
+                layout_context = result.get("results", {})
+                logger.info(f"  ✅ layout agent completed")
+
+            except Exception as e:
+                logger.error(f"  ❌ layout agent failed: {str(e)}")
+                layout_result_record.status = AgentStatus.FAILED.value
+                layout_result_record.error_message = str(e)
+                layout_result_record.completed_at = datetime.now(timezone.utc)
+                db.commit()
+        else:
+            logger.info(f"  ⏭️  Skipping layout agent (already completed)")
+            layout_context = layout_result_record.results
+
+        # Step 2: Extraction Agent (uses layout context)
+        extraction_agent = ExtractionAgent()
+        extraction_result_record = (
+            db.query(AgentResult)
+            .filter(
+                AgentResult.document_id == document_id,
+                AgentResult.agent_type == AgentType.EXTRACTION.value,
+            )
+            .first()
+        )
+
+        if not extraction_result_record:
+            extraction_result_record = AgentResult(
+                document_id=document_id,
+                upload_group_id=doc.upload_group_id,
+                agent_type=AgentType.EXTRACTION.value,
+            )
+            db.add(extraction_result_record)
+            db.flush()
+
+        if extraction_result_record.status != AgentStatus.COMPLETED.value:
+            extraction_result_record.status = AgentStatus.RUNNING.value
+            extraction_result_record.started_at = datetime.now(timezone.utc)
+            db.commit()
+
+            try:
+                logger.info(f"  🤖 Running extraction agent...")
+                result = extraction_agent.run(document_id, db, layout_context=layout_context)
+
+                extraction_result_record.status = AgentStatus.COMPLETED.value
+                extraction_result_record.results = result.get("results", {})
+                extraction_result_record.summary = result.get("summary", "")
+                extraction_result_record.risk_level = result.get("risk_level", "low")
+                extraction_result_record.completed_at = datetime.now(timezone.utc)
+                db.commit()
+
+                logger.info(f"  ✅ extraction agent completed")
+
+            except Exception as e:
+                logger.error(f"  ❌ extraction agent failed: {str(e)}")
+                extraction_result_record.status = AgentStatus.FAILED.value
+                extraction_result_record.error_message = str(e)
+                extraction_result_record.completed_at = datetime.now(timezone.utc)
+                db.commit()
+        else:
+            logger.info(f"  ⏭️  Skipping extraction agent (already completed)")
+
+        # Step 3: Other agents (Tampering, Fraud, Insights)
         agents = [
-            (AgentType.EXTRACTION, ExtractionAgent()),
             (AgentType.TAMPERING, TamperingAgent()),
             (AgentType.FRAUD, FraudAgent()),
             (AgentType.INSIGHTS, InsightsAgent()),  # Runs last — needs extraction data

@@ -29,7 +29,17 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+// Use runtime detection - same as api.ts
+function getApiBase(): string {
+  if (typeof window !== "undefined") {
+    const hostname = window.location.hostname;
+    if (hostname !== "localhost" && hostname !== "127.0.0.1") {
+      // Use the same protocol and host, ALB handles routing to backend
+      return `${window.location.protocol}//${window.location.host}/api`;
+    }
+  }
+  return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+}
 
 // ─── Provider ────────────────────────────────────────────────────────────────
 
@@ -63,7 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(
     async (email: string, password: string) => {
-      const res = await fetch(`${API_BASE}/auth/login`, {
+      const res = await fetch(`${getApiBase()}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -80,7 +90,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const register = useCallback(
     async (name: string, email: string, password: string) => {
-      const res = await fetch(`${API_BASE}/auth/register`, {
+      const res = await fetch(`${getApiBase()}/auth/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, email, password }),
@@ -89,7 +99,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const err = await res
           .json()
           .catch(() => ({ detail: "Registration failed" }));
-        throw new Error(err.detail || "Registration failed");
+        const errorMsg = Array.isArray(err.detail) 
+          ? err.detail.map((e: { msg: string }) => e.msg).join(", ")
+          : (err.detail || "Registration failed");
+        throw new Error(errorMsg);
       }
       const data = await res.json();
       persistSession(data.access_token, data.user);

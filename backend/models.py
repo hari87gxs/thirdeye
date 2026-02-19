@@ -19,6 +19,7 @@ class DocumentStatus(str, enum.Enum):
 
 
 class AgentType(str, enum.Enum):
+    LAYOUT = "layout"
     EXTRACTION = "extraction"
     INSIGHTS = "insights"
     TAMPERING = "tampering"

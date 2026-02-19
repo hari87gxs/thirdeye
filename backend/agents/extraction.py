@@ -29,6 +29,30 @@ from services.llm_client import chat_completion, chat_completion_with_image
 
 logger = logging.getLogger("ThirdEye.Agent.Extraction")
 
+
+def _sanitize_float(value):
+    """Sanitize float values to prevent JSON serialization errors."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if math.isnan(value) or math.isinf(value):
+            return None
+    return value
+
+
+def _sanitize_dict(data: dict) -> dict:
+    """Recursively sanitize all float values in a dictionary."""
+    result = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            result[key] = _sanitize_dict(value)
+        elif isinstance(value, list):
+            result[key] = [_sanitize_dict(v) if isinstance(v, dict) else _sanitize_float(v) for v in value]
+        else:
+            result[key] = _sanitize_float(value)
+    return result
+
+
 # ─── Page filtering (multi-bank) ─────────────────────────────────────────────
 
 SKIP_PATTERNS = [
@@ -325,8 +349,12 @@ def _extract_counterparty(description: str) -> Optional[str]:
     return None
 
 
-def _try_extract_tables(file_path: str) -> Optional[Dict]:
+def _try_extract_tables(file_path: str, layout_context: Optional[dict] = None) -> Optional[Dict]:
     """Try pdfplumber table extraction on the PDF.
+    
+    Args:
+        file_path: Path to PDF file
+        layout_context: Optional context from layout agent with table structure info
     
     Returns a dict with:
         "account_info": {...} from header table (opening/closing balance, etc.)
@@ -335,6 +363,11 @@ def _try_extract_tables(file_path: str) -> Optional[Dict]:
     Or None if tables cannot be extracted (borderless PDFs like OCBC).
     """
     import pdfplumber
+
+    # If layout context indicates no table structure, skip early
+    if layout_context and not layout_context.get("table_structure"):
+        logger.info("  📊 Layout agent found no table structure — skipping table extraction")
+        return None
 
     try:
         pdf = pdfplumber.open(file_path)
@@ -369,7 +402,22 @@ def _try_extract_tables(file_path: str) -> Optional[Dict]:
                     continue
 
                 # Map raw headers to canonical names
-                mapped = [_normalise_header(str(h) if h else "") for h in header_row]
+                # If layout context provides column mapping, use it as a hint
+                if layout_context and layout_context.get("column_mapping"):
+                    layout_mapping = layout_context["column_mapping"]
+                    logger.debug(f"  Using layout column mapping: {layout_mapping}")
+                    # Use layout mapping as primary, fallback to normalise_header
+                    mapped = []
+                    for h in header_row:
+                        h_str = str(h).lower().strip() if h else ""
+                        # Check if this header matches a layout mapping key
+                        canonical = layout_mapping.get(h_str)
+                        if not canonical:
+                            # Fallback to normalise_header
+                            canonical = _normalise_header(str(h) if h else "")
+                        mapped.append(canonical)
+                else:
+                    mapped = [_normalise_header(str(h) if h else "") for h in header_row]
 
                 # Is this the account info table? (has "Opening Balance" etc.)
                 raw_str = " ".join(str(c) if c else "" for c in header_row).lower()
@@ -1997,14 +2045,20 @@ def _compute_metrics(transactions: List[Dict], account_info: Dict) -> Dict:
     if len(currencies) > 1:
         result["currency_breakdown"] = currency_metrics
 
-    return result
+    # Sanitize all float values to prevent JSON serialization errors
+    return _sanitize_dict(result)
 
 
 # ─── Agent ────────────────────────────────────────────────────────────────────
 
 class ExtractionAgent(BaseAgent):
-    def run(self, document_id: str, db: Session) -> dict:
+    def run(self, document_id: str, db: Session, layout_context: Optional[dict] = None) -> dict:
         logger.info(f"Extraction agent running for document {document_id}")
+        
+        if layout_context:
+            bank_detected = layout_context.get("bank_detected", "Unknown")
+            confidence = layout_context.get("confidence", 0.0)
+            logger.info(f"  📐 Using layout context: Bank={bank_detected} (confidence={confidence:.0%})")
 
         doc = db.query(Document).filter(Document.id == document_id).first()
         if not doc:
@@ -2021,16 +2075,21 @@ class ExtractionAgent(BaseAgent):
         if not pages:
             raise ValueError("No text could be extracted from the PDF")
 
-        # 2. Detect bank (vision logo first, then text fallback)
-        bank = _detect_bank(pages, file_path=doc.file_path)
-        logger.info(f"  🏦 Detected bank: {bank}")
+        # 2. Detect bank (use layout context if available, otherwise detect)
+        if layout_context and layout_context.get("confidence", 0) > 0.7:
+            bank = layout_context.get("bank_detected", "unknown").lower()
+            logger.info(f"  🏦 Using bank from layout agent: {bank}")
+        else:
+            bank = _detect_bank(pages, file_path=doc.file_path)
+            logger.info(f"  🏦 Detected bank: {bank}")
 
         # 3. Try TABLE-BASED extraction first (works for bordered PDFs: DBS, SCB, etc.)
         #    Skip for scanned PDFs — pdfplumber can't extract tables from images.
         table_result = None
         if not is_scanned:
             logger.info("  📊 Trying table-based extraction...")
-            table_result = _try_extract_tables(doc.file_path)
+            # Pass layout context to help with column mapping
+            table_result = _try_extract_tables(doc.file_path, layout_context=layout_context)
 
         if table_result and table_result["transactions"]:
             # ── Table path: structured extraction (no LLM for transactions) ──

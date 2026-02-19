@@ -10,7 +10,20 @@ import {
   UploadGroup,
 } from "./types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+// Use runtime detection - called fresh for each request
+function getApiBase(): string {
+  // In browser, check for window.location to build dynamic URL
+  if (typeof window !== "undefined") {
+    // If we're on a non-localhost domain, use same host for API
+    const hostname = window.location.hostname;
+    if (hostname !== "localhost" && hostname !== "127.0.0.1") {
+      // Use the same protocol and host, ALB handles routing to backend
+      return `${window.location.protocol}//${window.location.host}/api`;
+    }
+  }
+  // Fallback to env var or localhost
+  return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+}
 
 function getAuthHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {};
@@ -49,7 +62,7 @@ export async function uploadDocuments(files: File[]): Promise<UploadResponse> {
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file));
 
-  const res = await fetch(`${API_BASE}/upload`, {
+  const res = await fetch(`${getApiBase()}/upload`, {
     method: "POST",
     headers: getAuthHeaders(),
     body: formData,
@@ -62,15 +75,15 @@ export async function uploadDocuments(files: File[]): Promise<UploadResponse> {
 }
 
 export async function listDocuments(): Promise<DocumentResponse[]> {
-  return fetchJSON<DocumentResponse[]>(`${API_BASE}/documents`);
+  return fetchJSON<DocumentResponse[]>(`${getApiBase()}/documents`);
 }
 
 export async function getDocument(id: string): Promise<DocumentResponse> {
-  return fetchJSON<DocumentResponse>(`${API_BASE}/documents/${id}`);
+  return fetchJSON<DocumentResponse>(`${getApiBase()}/documents/${id}`);
 }
 
 export async function deleteDocument(id: string): Promise<void> {
-  await fetchJSON<{ message: string }>(`${API_BASE}/documents/${id}`, {
+  await fetchJSON<{ message: string }>(`${getApiBase()}/documents/${id}`, {
     method: "DELETE",
   });
 }
@@ -78,15 +91,15 @@ export async function deleteDocument(id: string): Promise<void> {
 // ─── Analysis ────────────────────────────────────────────────────────────────
 
 export async function analyzeDocument(documentId: string): Promise<{ message: string; document_id: string }> {
-  return fetchJSON(`${API_BASE}/analyze/${documentId}`, { method: "POST" });
+  return fetchJSON(`${getApiBase()}/analyze/${documentId}`, { method: "POST" });
 }
 
 export async function getResults(documentId: string): Promise<DocumentAnalysis> {
-  return fetchJSON<DocumentAnalysis>(`${API_BASE}/results/${documentId}`);
+  return fetchJSON<DocumentAnalysis>(`${getApiBase()}/results/${documentId}`);
 }
 
 export async function getAgentResult(documentId: string, agentType: string): Promise<AgentResult> {
-  return fetchJSON<AgentResult>(`${API_BASE}/results/${documentId}/${agentType}`);
+  return fetchJSON<AgentResult>(`${getApiBase()}/results/${documentId}/${agentType}`);
 }
 
 // ─── Transactions & Metrics ──────────────────────────────────────────────────
@@ -102,43 +115,50 @@ export async function getTransactions(
   if (params?.category) searchParams.set("category", params.category);
 
   const qs = searchParams.toString();
-  return fetchJSON<TransactionsResponse>(`${API_BASE}/transactions/${documentId}${qs ? `?${qs}` : ""}`);
+  return fetchJSON<TransactionsResponse>(`${getApiBase()}/transactions/${documentId}${qs ? `?${qs}` : ""}`);
 }
 
 export async function getMetrics(documentId: string): Promise<StatementMetrics> {
-  return fetchJSON<StatementMetrics>(`${API_BASE}/metrics/${documentId}`);
+  return fetchJSON<StatementMetrics>(`${getApiBase()}/metrics/${documentId}`);
 }
 
 // ─── Group Analysis ──────────────────────────────────────────────────────────
 
 export async function listUploadGroups(): Promise<UploadGroup[]> {
-  return fetchJSON<UploadGroup[]>(`${API_BASE}/groups`);
+  return fetchJSON<UploadGroup[]>(`${getApiBase()}/groups`);
 }
 
 export async function analyzeGroup(
   uploadGroupId: string
 ): Promise<{ message: string; upload_group_id: string; document_ids: string[] }> {
-  return fetchJSON(`${API_BASE}/analyze/group/${uploadGroupId}`, { method: "POST" });
+  return fetchJSON(`${getApiBase()}/analyze/group/${uploadGroupId}`, { method: "POST" });
 }
 
 export async function getGroupResults(uploadGroupId: string): Promise<GroupResults> {
-  return fetchJSON<GroupResults>(`${API_BASE}/results/group/${uploadGroupId}`);
+  return fetchJSON<GroupResults>(`${getApiBase()}/results/group/${uploadGroupId}`);
 }
 
 export async function getGroupStatus(uploadGroupId: string): Promise<GroupStatus> {
-  return fetchJSON<GroupStatus>(`${API_BASE}/status/group/${uploadGroupId}`);
+  return fetchJSON<GroupStatus>(`${getApiBase()}/status/group/${uploadGroupId}`);
 }
 
 export async function getGroupMetrics(uploadGroupId: string): Promise<{
   aggregated: import("./types").AggregatedMetrics | null;
   per_statement: StatementMetrics[];
 }> {
-  return fetchJSON(`${API_BASE}/metrics/group/${uploadGroupId}`);
+  return fetchJSON(`${getApiBase()}/metrics/group/${uploadGroupId}`);
 }
 
 // ─── Health ──────────────────────────────────────────────────────────────────
 
 export async function healthCheck(): Promise<{ status: string; service: string; version: string }> {
-  const BASE = process.env.NEXT_PUBLIC_API_URL?.replace("/api", "") || "http://localhost:8000";
-  return fetchJSON(`${BASE}/health`);
+  // Use dynamic hostname detection
+  let baseUrl = "http://localhost:8000";
+  if (typeof window !== "undefined") {
+    const hostname = window.location.hostname;
+    if (hostname !== "localhost" && hostname !== "127.0.0.1") {
+      baseUrl = `http://${hostname}:8000`;
+    }
+  }
+  return fetchJSON(`${baseUrl}/health`);
 }

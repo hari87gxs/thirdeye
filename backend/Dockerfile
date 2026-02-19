@@ -17,8 +17,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create uploads directory
-RUN mkdir -p /app/uploads
+# Create uploads and data directories
+RUN mkdir -p /app/uploads /app/data
 
 # Expose port
 EXPOSE 8000

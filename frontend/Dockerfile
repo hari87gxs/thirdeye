@@ -21,9 +21,11 @@ FROM node:18-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
+ENV HOSTNAME="0.0.0.0"
 
 # Copy standalone output (includes only required node_modules)
 COPY --from=builder /app/.next/standalone ./
+# Copy static files - these must be in the correct location for Next.js to serve them
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 

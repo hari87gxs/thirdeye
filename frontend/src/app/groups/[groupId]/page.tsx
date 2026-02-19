@@ -49,6 +49,13 @@ const AGENT_CONFIG: Record<
   string,
   { icon: typeof FileText; label: string; color: string; bgColor: string; description: string }
 > = {
+  layout: {
+    icon: FileText,
+    label: "Layout Agent",
+    color: "text-cyan-400",
+    bgColor: "bg-cyan-500/10 border-cyan-500/20",
+    description: "PDF structure analysis, bank detection & table mapping",
+  },
   extraction: {
     icon: FileText,
     label: "Extraction Agent",
@@ -477,8 +484,8 @@ export default function GroupOverviewPage() {
                   </div>
 
                   {/* Agent Cards Grid */}
-                  <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4">
-                    {["extraction", "insights", "tampering", "fraud"].map((agentType) => (
+                  <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-5">
+                    {["layout", "extraction", "insights", "tampering", "fraud"].map((agentType) => (
                       <AgentCard
                         key={agentType}
                         agentType={agentType}
